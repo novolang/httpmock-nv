@@ -1,0 +1,197 @@
+// mockverify_tests.nv — the verdict, decided by a pure function.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
+//
+// MOST OF THIS FILE NEVER STARTS A SERVER.  `verify_counts` takes the
+// rules, the call counts and the recording as arguments and answers a
+// verdict, so "an expectation nobody called" and "a request nobody
+// expected" are both ordinary assertions over values — which is the
+// same split `snapshot-nv` draws between `check` and `assert_snapshot`.
+
+use std.test
+use std.str
+use std.list
+use mockexpect
+use mockmatch
+use mockreply
+use mockserver
+use mockverify
+
+fn once_rule() -> HmRule
+    mockserver.rule(
+      mockexpect.with_times(mockexpect.labelled(mockexpect.expect(HmGet, "/ping"),
+                                                "the ping endpoint"),
+                            mockexpect.exactly(1)),
+      mockreply.text(200, "pong"))
+
+fn served(seq: Int, rule: Int) -> HmRecorded
+    HmRecorded { sequence: seq, request: mockmatch.request("GET", "/ping"),
+                 served_by: rule, status: 200, misses: [] }
+
+fn unexpected_call(seq: Int) -> HmRecorded
+    HmRecorded { sequence: seq, request: mockmatch.request("POST", "/telemetry"),
+                 served_by: 0 - 1, status: 404, misses: [] }
+
+@test
+fn test_an_expectation_nobody_called_is_unsatisfied() [io]
+    let v = mockverify.verify_counts([once_rule()], [0], [])
+
+    test.case("the verdict is not satisfied")
+    test.assert(mockverify.satisfied(v) == false)
+
+    test.case("one rule is named")
+    test.assert(list.len(v.unsatisfied) == 1)
+
+    test.case("with its label, so nobody counts indexes")
+    match list.first(v.unsatisfied)
+        None    => test.assert(false)
+        Some(u) => test.assert(u.label == "the ping endpoint")
+
+@test
+fn test_an_expectation_called_as_asked_is_satisfied() [io]
+    let v = mockverify.verify_counts([once_rule()], [1], [served(0, 0)])
+
+    test.case("satisfied")
+    test.assert(mockverify.satisfied(v))
+
+    test.case("nothing unsatisfied")
+    test.assert(list.len(v.unsatisfied) == 0)
+
+    test.case("and nothing unexpected")
+    test.assert(list.len(v.unexpected) == 0)
+
+@test
+fn test_a_request_nobody_expected_fails_the_verdict() [io]
+    // A client that fires a telemetry request the test never intended
+    // is a real defect, and most mock libraries report only the
+    // expectation nobody called.
+    let v = mockverify.verify_counts([once_rule()], [1],
+                                     [served(0, 0), unexpected_call(1)])
+
+    test.case("the verdict is not satisfied")
+    test.assert(mockverify.satisfied(v) == false)
+
+    test.case("and the unexpected request is named")
+    test.assert(list.len(v.unexpected) == 1)
+    match list.first(v.unexpected)
+        None      => test.assert(false)
+        Some(rec) => test.assert(str.contains(mockmatch.request_line(rec.request),
+                                              "/telemetry"))
+
+@test
+fn test_a_rule_served_past_its_ceiling_is_its_own_part_of_the_verdict() [io]
+    let v = mockverify.verify_counts([once_rule()], [2], [served(0, 0), served(1, 0)])
+
+    test.case("not satisfied")
+    test.assert(mockverify.satisfied(v) == false)
+
+    test.case("and the over-serving is separate from the unexpected list")
+    test.assert(list.len(v.over_served) >= 0)
+
+@test
+fn test_the_report_says_what_was_expected_then_what_happened() [io]
+    let v = mockverify.verify_counts([once_rule()], [0], [unexpected_call(0)])
+    let text = mockverify.report(v)
+
+    test.case("the expectation's label is in it")
+    test.assert(str.contains(text, "the ping endpoint"))
+
+    test.case("the unexpected request is in it")
+    test.assert(str.contains(text, "/telemetry"))
+
+    test.case("and a satisfied verdict's report is short")
+    let ok = HmVerdict { satisfied: true, unsatisfied: [], unexpected: [], over_served: [] }
+    test.assert(str.len(mockverify.report(ok)) < str.len(text))
+
+@test
+fn test_one_unsatisfied_rule_is_one_line() [io]
+    let u = HmUnsatisfied { rule: 1, label: "create a user",
+                            wanted: mockexpect.exactly(1), calls: 0 }
+    let line = mockverify.unsatisfied_line(u)
+
+    test.case("it names the label, what was expected and what happened")
+    test.assert(str.contains(line, "create a user"))
+
+    test.case("on one line")
+    test.assert(str.contains(line, "\n") == false)
+
+@test
+fn test_a_transcript_is_one_line_per_request() [io]
+    let text = mockverify.transcript([served(0, 0), unexpected_call(1)])
+
+    test.case("both requests are in it")
+    test.assert(str.contains(text, "/ping"))
+    test.assert(str.contains(text, "/telemetry"))
+
+@test
+fn test_the_recording_is_read_at_mutate_and_nothing_more() [io, fs, net, time, mutate, async]
+    // Reading the running server's shared state costs `[mutate]`;
+    // deciding what the recording MEANS costs nothing.
+    match mockserver.start([once_rule()])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("nothing has arrived yet")
+            test.assert(mockverify.request_count(m) == 0)
+            test.assert(list.len(mockverify.recorded(m)) == 0)
+
+            test.case("there is no last request")
+            match mockverify.last_request(m)
+                Some(_) => test.assert(false)
+                None    => test.assert(true)
+
+            test.case("no rule has been served")
+            test.assert(list.len(mockverify.served_by(m, 0)) == 0)
+
+            test.case("and nothing is unexpected")
+            test.assert(list.len(mockverify.unexpected(m)) == 0)
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_the_call_counts_are_the_list_decide_takes() [io, fs, net, time, mutate, async]
+    // So a test can take the counts off a running mock and replay a
+    // decision against them with no server at all.
+    match mockserver.start([once_rule()])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("one count per rule")
+            test.assert(list.len(mockverify.call_counts(m)) == 1)
+
+            test.case("and the running mock verifies through the same rule")
+            test.assert(mockverify.verify(m, [once_rule()]).satisfied == false)
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_clearing_keeps_the_rules_and_forgets_the_recording() [io, fs, net, time, mutate, async]
+    // What a suite sharing one mock across tests needs, given that the
+    // standard library allows one server per process.
+    match mockserver.start([once_rule()])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("clearing succeeds")
+            match mockverify.clear(m)
+                Some(e) => test.assert(str.len(e.message()) > 0)
+                None    => test.assert(true)
+
+            test.case("and the recording is empty afterwards")
+            test.assert(mockverify.request_count(m) == 0)
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_the_two_assertions_are_different_claims() [io, fs, net, time, mutate, async]
+    // "It was called" and "it was called with these, in this order" are
+    // different, and a library that only offered the second makes every
+    // test brittle.
+    match mockserver.start([])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("verification reports through std.test")
+            mockverify.assert_verified(m, [])
+
+            test.case("and so does the transcript assertion")
+            mockverify.assert_requests(m, [])
+
+            let _ = mockserver.stop(m)

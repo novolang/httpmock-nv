@@ -1,0 +1,390 @@
+// mockmatch.nv — the decision, and it is a pure function.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE LOAD-BEARING INTERFACE IS `HmDecision`, AND `decide` IS `[]`.
+// Given a list of expectations, the calls each has already served, and
+// one request, this module answers which expectation serves it — or,
+// when none does, WHICH FIELD OF WHICH EXPECTATION MISSED.
+//
+// Two things fall out, and both are the reason for the shape.
+//
+// FIRST, THE MATCHING IS TESTABLE WITHOUT A SOCKET.  A mock server's
+// bugs are almost never in the socket; they are in "why did my
+// expectation not match" — a header compared case-sensitively, a path
+// that needed its trailing slash, a body whose JSON members came out in
+// another order.  Every one of those is a case in this package's own
+// suite, written as a value in and a value out, with no port, no
+// process and no teardown.
+//
+// SECOND, THE FAILURE CAN NAME THE FIELD.  Every other mock library
+// answers a bare 404 and leaves the reader to guess.  `HmUnmatched`
+// carries one `HmMiss` per expectation — the expectation's index, the
+// field that differed, what was wanted (matchers-nv's `describe`) and
+// what arrived (`describe_mismatch`) — so the failure reads:
+//
+//     no expectation matched POST /users
+//       #0 the token endpoint — method: wanted GET, was POST
+//       #1 create a user      — header Authorization: wanted a string
+//                               starting with "Bearer ", was "Basic dXNlcg=="
+//
+// which is the difference between a usable mock and one people delete.
+//
+// THE FIELDS ARE CHECKED IN A FIXED ORDER — method, path, query,
+// headers, body — and the FIRST miss per expectation is the one
+// reported.  In that order because it is cheapest first and because it
+// is the order a person reads a request in; first-miss-only because an
+// expectation that differs in four fields is almost always wrong in the
+// first one, and four lines per expectation makes the report unreadable
+// at the exact moment it matters.
+
+use mockexpect
+use matchers
+
+// Which part of a request an expectation disagreed about.
+//
+// A type rather than a string, so a runner can group misses by field
+// and a test of this module can assert the field rather than parse a
+// sentence.
+pub enum HmField
+    HmMethodField
+    HmPathField
+    HmQueryField(name: Str)
+    HmHeaderField(name: Str)
+    HmBodyField
+
+// Why one expectation did not match this request.
+pub struct HmMiss
+    // Which expectation, by index in the list handed to `decide`.
+    expectation: Int
+    // Its one-line description, carried so a report does not have to
+    // hold the expectation list to render a miss.
+    label: Str
+    field: HmField
+    // What the expectation wanted, in matchers-nv's words —
+    // `matchers.describe` for a field with a matcher, and a plain
+    // spelling for the method and the path.
+    wanted: Str
+    // What arrived, in matchers-nv's words —
+    // `matchers.describe_mismatch`, which is why the two read as one
+    // sentence.
+    got: Str
+
+// What a request does.
+pub enum HmDecision
+    // Expectation `index` serves it, with this response.  The bound
+    // path parameters come with it, because a response that echoes
+    // `:id` needs them and looking them up again would re-run the
+    // match.
+    HmServe(index: Int, params: [HmBinding])
+    // Nothing matched, and here is why each expectation did not.
+    HmUnmatched(misses: [HmMiss])
+    // An expectation matched, and it has already been served as many
+    // times as it allows.  Its own answer rather than a miss, because
+    // "called twice" and "never matched" are different bugs and a mock
+    // that reported the second for the first sends a reader looking at
+    // their matchers.
+    HmExhausted(index: Int, label: Str, limit: Int)
+
+// A path parameter bound by the match.
+pub struct HmBinding
+    name: Str
+    value: Str
+
+// What a request looks like to this module.
+//
+// A value of this package's own rather than the standard library's
+// `HttpRequest`, and the reason is the one that makes the module `[]`:
+// a test of the matching writes one of these in three lines, where
+// building an `HttpRequest` means naming nine fields, six of which the
+// decision never reads. `mockserver` converts.
+pub struct HmRequest
+    method: Str
+    // Path only — no query string, no fragment.
+    path: Str
+    // The query, parsed into pairs, in the order they appeared.
+    query: [HmBinding]
+    // Header names as they arrived; the comparison folds case.
+    headers: [HmBinding]
+    // The body as text.  A mock is for testing an HTTP client, and a
+    // client's request bodies are text in every case a person writes a
+    // matcher for; a binary body matches only a matcher that ignores it.
+    body: Str
+
+// A request, for a test of the matching.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.request("GET", "/users/7").path)
+// ```
+pub fn request(method: Str, path: Str) -> HmRequest []
+    todo("httpmock-nv.mockmatch.request")
+
+// The request with a query parameter.
+//
+// ```novo
+// use mockmatch
+// use std.list
+//
+// fn main() [io]
+//     let r = mockmatch.with_query(mockmatch.request("GET", "/s"), "q", "novo")
+//     println("${list.len(r.query)}")
+// ```
+pub fn with_query(r: HmRequest, name: Str, value: Str) -> HmRequest []
+    todo("httpmock-nv.mockmatch.with_query")
+
+// The request with a header.
+//
+// ```novo
+// use mockmatch
+// use std.list
+//
+// fn main() [io]
+//     let r = mockmatch.with_header(mockmatch.request("GET", "/t"), "Accept", "text/plain")
+//     println("${list.len(r.headers)}")
+// ```
+pub fn with_header(r: HmRequest, name: Str, value: Str) -> HmRequest []
+    todo("httpmock-nv.mockmatch.with_header")
+
+// The request with a body.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.with_body(mockmatch.request("POST", "/u"), "ping").body)
+// ```
+pub fn with_body(r: HmRequest, body: Str) -> HmRequest []
+    todo("httpmock-nv.mockmatch.with_body")
+
+// The request built from a target with a query string on it.
+//
+// `"/s?q=novo&page=2"` in, the path and the pairs out — the parsing a
+// caller would otherwise write beside every test.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.request_target("GET", "/s?q=novo&page=2").path)
+// ```
+pub fn request_target(method: Str, target: Str) -> HmRequest []
+    todo("httpmock-nv.mockmatch.request_target")
+
+// THE DECISION.  Which expectation serves this request, or why none
+// does.
+//
+// `calls[i]` is how many times expectation `i` has already been served;
+// a caller with no history passes an empty list and every count is
+// zero.  Taking the counts as an argument rather than reading them from
+// the mock is what keeps this function `[]` — and what lets a test
+// assert the times-called behaviour without a server.
+//
+// First match wins, in list order.
+//
+// ```novo
+// use mockexpect
+// use mockmatch
+//
+// fn main() [io]
+//     let es = [mockexpect.expect(HmGet, "/users/:id")]
+//     println(mockmatch.decision_name(mockmatch.decide(es, [], mockmatch.request("GET", "/users/7"))))
+// ```
+pub fn decide(es: [mockexpect.HmExpectation], calls: [Int], r: HmRequest) -> HmDecision []
+    todo("httpmock-nv.mockmatch.decide")
+
+// Whether one expectation matches, ignoring how many times it has been
+// served.
+//
+// The predicate under `decide`, published because a test of one rule
+// should not have to build a list and read an index out of a decision.
+//
+// ```novo
+// use mockexpect
+// use mockmatch
+//
+// fn main() [io]
+//     let e = mockexpect.expect(HmGet, "/users/:id")
+//     let hit = mockmatch.matches(e, mockmatch.request("GET", "/users/7"))
+//     println("${hit}")
+// ```
+pub fn matches(e: mockexpect.HmExpectation, r: HmRequest) -> Bool []
+    todo("httpmock-nv.mockmatch.matches")
+
+// Why one expectation did not match, or `None` when it did.
+//
+// The first miss in the fixed field order — method, path, query,
+// headers, body.
+//
+// ```novo
+// use mockexpect
+// use mockmatch
+//
+// fn main() [io]
+//     let e = mockexpect.expect(HmGet, "/users/:id")
+//     match mockmatch.miss_of(e, 0, mockmatch.request("POST", "/users/7"))
+//         Some(m) => println(mockmatch.field_name(m.field))
+//         None    => println("matched")
+// ```
+pub fn miss_of(e: mockexpect.HmExpectation, index: Int, r: HmRequest) -> ?HmMiss []
+    todo("httpmock-nv.mockmatch.miss_of")
+
+// The path parameters an expectation binds from a request.
+//
+// Empty when the expectation does not match.
+//
+// ```novo
+// use mockexpect
+// use mockmatch
+// use std.list
+//
+// fn main() [io]
+//     let e = mockexpect.expect(HmGet, "/users/:id")
+//     let bs = mockmatch.bindings(e, mockmatch.request("GET", "/users/7"))
+//     println("${list.len(bs)}")
+// ```
+pub fn bindings(e: mockexpect.HmExpectation, r: HmRequest) -> [HmBinding] []
+    todo("httpmock-nv.mockmatch.bindings")
+
+// A binding's value by name, or `None`.
+//
+// The lookup a response builder and a header comparison both need; the
+// header comparison folds case and this does not, which is why it takes
+// the list rather than being a method on the request.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     match mockmatch.binding([], "id")
+//         Some(v) => println(v)
+//         None    => println("unbound")
+// ```
+pub fn binding(bs: [HmBinding], name: Str) -> ?Str []
+    todo("httpmock-nv.mockmatch.binding")
+
+// A header's value by name, compared case-insensitively.
+//
+// RFC 7230 § 3.2, and the single commonest reason a hand-rolled mock
+// does not match: a client that sends `authorization` against an
+// expectation that wrote `Authorization`.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     let r = mockmatch.with_header(mockmatch.request("GET", "/t"), "Accept", "text/plain")
+//     match mockmatch.header(r, "accept")
+//         Some(v) => println(v)
+//         None    => println("absent")
+// ```
+pub fn header(r: HmRequest, name: Str) -> ?Str []
+    todo("httpmock-nv.mockmatch.header")
+
+// The decision's short name: `serve`, `unmatched`, `exhausted`.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.decision_name(HmUnmatched([])))
+// ```
+pub fn decision_name(d: HmDecision) -> Str []
+    todo("httpmock-nv.mockmatch.decision_name")
+
+// The field's name as a report writes it: `method`, `path`,
+// `query q`, `header Authorization`, `body`.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.field_name(HmHeaderField("Authorization")))
+// ```
+pub fn field_name(f: HmField) -> Str []
+    todo("httpmock-nv.mockmatch.field_name")
+
+// One miss as one line: the index, the label, the field, wanted, was.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     let m = HmMiss { expectation: 0, label: "the token endpoint",
+//                      field: HmMethodField, wanted: "GET", got: "POST" }
+//     println(mockmatch.miss_line(m))
+// ```
+pub fn miss_line(m: HmMiss) -> Str []
+    todo("httpmock-nv.mockmatch.miss_line")
+
+// The whole unmatched report: the request line, then one line per
+// expectation.
+//
+// What `mockserver` puts in the 404 body and what `mockverify` puts in
+// a failure, so the two cannot drift.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.unmatched_report(mockmatch.request("POST", "/users"), []))
+// ```
+pub fn unmatched_report(r: HmRequest, misses: [HmMiss]) -> Str []
+    todo("httpmock-nv.mockmatch.unmatched_report")
+
+// The request as one line: method, path, and the query if there is one.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.request_line(mockmatch.request("GET", "/users/7")))
+// ```
+pub fn request_line(r: HmRequest) -> Str []
+    todo("httpmock-nv.mockmatch.request_line")
+
+// A matcher's own description, which is where `wanted` comes from.
+//
+// A thin call into matchers-nv, published so that a caller building a
+// report of their own writes the same words the mock does.
+//
+// ```novo
+// use matchtext
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.describe_wanted(matchtext.starts_with("Bearer ")))
+// ```
+pub fn describe_wanted(m: Matcher<Str>) -> Str []
+    todo("httpmock-nv.mockmatch.describe_wanted")
+
+// What a matcher says about a value that did not satisfy it, which is
+// where `got` comes from.
+//
+// ```novo
+// use matchtext
+// use mockmatch
+//
+// fn main() [io]
+//     println(mockmatch.describe_got(matchtext.starts_with("Bearer "), "Basic dXNlcg=="))
+// ```
+pub fn describe_got(m: Matcher<Str>, value: Str) -> Str []
+    todo("httpmock-nv.mockmatch.describe_got")
+
+// Whether two JSON documents are equal as JSON.
+//
+// Member order and insignificant whitespace do not distinguish them,
+// which is what `mockexpect.with_body_json` compares with. Text that is
+// not JSON on either side compares as text, so the function is total.
+//
+// ```novo
+// use mockmatch
+//
+// fn main() [io]
+//     let same = mockmatch.json_equal("{\"a\":1,\"b\":2}", "{\"b\":2,\"a\":1}")
+//     println("${same}")
+// ```
+pub fn json_equal(a: Str, b: Str) -> Bool []
+    todo("httpmock-nv.mockmatch.json_equal")

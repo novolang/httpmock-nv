@@ -1,0 +1,179 @@
+// mockexpect_tests.nv — an expectation is data, and this file proves it
+// by never starting anything.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
+// That is the expected result until the bodies land.
+//
+// NOT ONE ASSERTION IN THIS FILE NEEDS A SOCKET.  That is the whole
+// argument for building an expectation rather than registering one: the
+// builders are `[]`, so the rows are `[io]` for the printing `std.test`
+// does and nothing else.
+
+use std.test
+use std.list
+use std.str
+use routepat
+use matchtext
+use mockexpect
+
+@test
+fn test_a_call_constraint_says_when_it_is_satisfied_and_when_it_is_spent() [io]
+    // The two questions are different: "has it been called enough" is
+    // asked at verification, and "may it be called again" is asked at
+    // every request.  A mock that only asked the first reports "called
+    // twice" as a surprise at the end instead of a failure at the
+    // second call.
+    let once = mockexpect.exactly(1)
+
+    test.case("zero calls is not enough")
+    test.assert(mockexpect.times_satisfied(once, 0) == false)
+
+    test.case("one call is")
+    test.assert(mockexpect.times_satisfied(once, 1))
+
+    test.case("and one call has spent it")
+    test.assert(mockexpect.times_exhausted(once, 1))
+    test.assert(mockexpect.times_exhausted(once, 0) == false)
+
+@test
+fn test_the_four_constraints_bound_what_their_names_say() [io]
+    test.case("any_times has no floor and no ceiling")
+    test.assert(mockexpect.times_satisfied(mockexpect.any_times(), 0))
+    test.assert(mockexpect.times_exhausted(mockexpect.any_times(), 1000) == false)
+
+    test.case("at_least has a floor and no ceiling")
+    test.assert(mockexpect.times_satisfied(mockexpect.at_least(2), 1) == false)
+    test.assert(mockexpect.times_exhausted(mockexpect.at_least(2), 9) == false)
+
+    test.case("at_most has a ceiling and no floor")
+    test.assert(mockexpect.times_satisfied(mockexpect.at_most(2), 0))
+    test.assert(mockexpect.times_exhausted(mockexpect.at_most(2), 2))
+
+    test.case("and an expectation carries one")
+    let e = mockexpect.with_times(mockexpect.expect(HmGet, "/t"), mockexpect.exactly(3))
+    test.assert(e.times.at_most == 3)
+
+@test
+fn test_a_pattern_that_does_not_parse_is_a_rule_that_matches_nothing() [io]
+    // And `path_ok` is where a person is told, rather than a `Result`
+    // at every call site — an expectation is built in a table of six
+    // and a `Result` per row makes the table unreadable.
+    test.case("path_ok refuses a pattern with a nameless parameter")
+    test.assert(mockexpect.path_ok("/users/:") == false)
+
+    test.case("and accepts an ordinary one")
+    test.assert(mockexpect.path_ok("/users/:id/posts"))
+
+    test.case("expect still answers an expectation")
+    test.assert(str.len(mockexpect.describe(mockexpect.expect(HmGet, "/users/:"))) > 0)
+
+@test
+fn test_an_exact_path_means_its_own_characters() [io]
+    // A path that contains `:` or `*` and means them literally, which a
+    // pattern would read as a parameter and a tail.
+    test.case("the colon is a colon")
+    test.assert(str.contains(mockexpect.describe(mockexpect.expect_exact(HmGet, "/a:b")),
+                             "/a:b"))
+
+@test
+fn test_the_method_names_are_the_wire_spellings() [io]
+    test.case("GET")
+    test.assert(mockexpect.method_name(HmGet) == "GET")
+
+    test.case("any method is a star, because it is not a method")
+    test.assert(mockexpect.method_name(HmAnyMethod) == "*")
+
+    test.case("and a wire spelling comes back")
+    match mockexpect.method_named("DELETE")
+        None    => test.assert(false)
+        Some(m) => test.assert(mockexpect.method_name(m) == "DELETE")
+
+    test.case("a method this package does not name is None, not a guess")
+    match mockexpect.method_named("PROPFIND")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_a_header_rule_is_a_matcher_and_it_can_be_optional() [io]
+    let base = mockexpect.expect(HmGet, "/t")
+
+    test.case("a required header rule")
+    let required = mockexpect.with_header(base, "Authorization",
+                                          matchtext.starts_with("Bearer "))
+    test.assert(list.len(required.headers) == 1)
+    match list.first(required.headers)
+        None    => test.assert(false)
+        Some(h) => test.assert(h.required)
+
+    test.case("an optional one, for authentication that may be absent")
+    let optional = mockexpect.with_optional_header(base, "X-Trace",
+                                                   matchtext.is_blank())
+    match list.first(optional.headers)
+        None    => test.assert(false)
+        Some(h) => test.assert(h.required == false)
+
+    test.case("and the shorthand builds an equality rule")
+    test.assert(list.len(mockexpect.with_header_value(base, "Accept", "application/json").headers) == 1)
+
+@test
+fn test_a_query_rule_is_a_matcher_and_extra_parameters_are_ignored() [io]
+    // A mock that required an exact query string breaks on every client
+    // that adds a trace parameter, so the rules are about the
+    // parameters the expectation NAMES.
+    let base = mockexpect.expect(HmGet, "/search")
+
+    test.case("a matcher rule")
+    test.assert(list.len(mockexpect.with_query(base, "q",
+                                               matchtext.contains_text("novo")).query) == 1)
+
+    test.case("and the equality shorthand")
+    test.assert(list.len(mockexpect.with_query_value(base, "page", "2").query) == 1)
+
+@test
+fn test_a_body_rule_is_a_matcher_text_or_json() [io]
+    let base = mockexpect.expect(HmPost, "/users")
+
+    test.case("a matcher")
+    match mockexpect.with_body(base, matchtext.contains_text("name")).body
+        None    => test.assert(false)
+        Some(_) => test.assert(true)
+
+    test.case("an exact text")
+    match mockexpect.with_body_text(base, "ping").body
+        None    => test.assert(false)
+        Some(_) => test.assert(true)
+
+    test.case("and a JSON document, which is compared as JSON")
+    match mockexpect.with_body_json(base, "{\"a\":1}").body
+        None    => test.assert(false)
+        Some(_) => test.assert(true)
+
+    test.case("no rule at all means the body is not part of the decision")
+    match base.body
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_the_policy_is_the_services_and_not_three_booleans() [io]
+    // router-nv's `RoutePolicy` already owns trailing slash, case and
+    // the two decoding decisions, and a mock standing in for a real
+    // service should use the policy that service uses.
+    let strict = mockexpect.with_policy(mockexpect.expect(HmGet, "/t"),
+                                        routepat.strict_policy())
+
+    test.case("a strict policy decodes nothing")
+    test.assert(strict.policy.decode_params == false)
+
+    test.case("and merges no slashes")
+    test.assert(strict.policy.merge_slashes == false)
+
+@test
+fn test_a_label_is_what_a_failure_names() [io]
+    test.case("with no label, the method and path are the description")
+    test.assert(str.contains(mockexpect.describe(mockexpect.expect(HmGet, "/users/:id")),
+                             "/users/:id"))
+
+    test.case("with one, the label is")
+    let e = mockexpect.labelled(mockexpect.expect(HmGet, "/t"), "the token endpoint")
+    test.assert(str.contains(mockexpect.describe(e), "the token endpoint"))

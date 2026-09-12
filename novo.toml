@@ -1,0 +1,63 @@
+[package]
+name        = "httpmock-nv"
+version     = "0.0.1"
+description = "A stub HTTP server for tests: expectations are values, the request-to-response DECISION is a pure function that reports which expectation missed and on which field, the mock records every request whether or not it matched, and verification reads like a matchers-nv failure.  The server binds port 0 and reports what the kernel gave it, so nothing is hard-coded and nothing races.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `host`, and the row on `mockserver.start` is wider than the plan
+# guessed — `[net]` alone is not what a server costs.
+#
+# `http.server.serve_async` is declared
+# `[io, fs, net, time, mutate, async]`, and so is the handler it takes,
+# so anything that raises a server inherits all six: `[net]` for the
+# bind and the sockets, `[async]` because the accept loop and the
+# workers are tasks, `[mutate]` for the shared queue and the live-worker
+# count, `[time]` for the read budget, `[fs]` and `[io]` from the
+# stdlib's own handler row.
+#
+# The half that matters is narrow, and it is the reason for the split:
+# `mockexpect`, `mockmatch`, `mockreply` and every verification reader
+# are `[]` — the whole matching decision is a pure function — and
+# `mockverify.verify` is `[mutate]`, because reading what the server
+# recorded is a read of shared state and nothing more.
+layer       = "host"
+
+category    = "testing"
+
+tags        = ["httpmock", "mock", "stub", "http", "testing", "responses", "wiremock"]
+repository  = "https://github.com/novolang/httpmock-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "Expectations as values, and a decision that says which one missed"
+
+[dependencies]
+# The path patterns.  An expectation matches `/users/:id/posts` rather
+# than a literal, and router-nv already owns that grammar, the
+# trailing-slash and case policies, and the span-based parameter
+# capture — so `HmExpectation` holds a `RoutePattern` and this package
+# writes no path matching of its own.  `core`, which the layer order
+# allows.
+router-nv = "^0.0.1"
+
+# The value matchers, and the failure text.
+#
+# A header or body expectation is a `Matcher<Str>`, so
+# `contains_text`, `matches_regex`, `equal_ignoring_case` and every
+# combinator already exist and behave the way they do in the rest of a
+# suite.  More importantly `describe` and `describe_mismatch` are what
+# turn "expectation 1 did not match" into "expected a header
+# Authorization starting with Bearer, was `Basic dXNlcg==`" — which is
+# the whole difference between a usable mock and a 404.  `core`.
+matchers-nv = "^0.0.1"

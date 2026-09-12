@@ -1,0 +1,314 @@
+// mockverify.nv — what the mock saw, and whether that is what was
+// asked for.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE MOCK RECORDS EVERY REQUEST, MATCHED OR NOT.  An unmatched request
+// is not an error the server swallows into a 404 — it is a recorded
+// fact with the misses attached, so "the client called `/users/7` and
+// I expected `/users/:id` with an `Authorization` header" is answerable
+// after the fact, from the values, without turning on a log.
+//
+// A REQUEST THAT NOBODY EXPECTED IS AS INTERESTING AS AN EXPECTATION
+// NOBODY CALLED, and most mock libraries report only the second.  A
+// client that fires a telemetry request the test never intended is a
+// real defect, and here it is `HmVerdict.unexpected` rather than a line
+// in a log nobody reads.
+//
+// THE VERDICT IS A VALUE, and `verify_counts` — the whole rule — is
+// `[]`.  Reading the recording costs `[mutate]`, because that is what
+// reading the running server's shared state costs and nothing more;
+// deciding what the recording MEANS costs nothing.  So every
+// interesting case in this package's own suite is a list of counts in
+// and a verdict out.
+//
+// THE FAILURE TEXT IS matchers-nv's SHAPE: what was expected, then what
+// happened, in that order, one line each, with the expectation's label
+// in front so a reader does not count indexes.
+//
+//     the mock was not satisfied
+//       #1 create a user — expected exactly 1 call, was 0
+//       unexpected POST /telemetry (no expectation matched: #0 path,
+//         #1 method)
+
+use mockexpect
+use mockmatch
+use mockserver
+
+// One request the mock saw.
+pub struct HmRecorded
+    // Where it came in the run, from 0, so an ordering assertion does
+    // not need timestamps.
+    sequence: Int
+    request: mockmatch.HmRequest
+    // The rule that served it, by index, or `0 - 1` when none did.
+    served_by: Int
+    // The status that went back.
+    status: Int
+    // Why each rule did not match, when none did.  Empty for a served
+    // request — the misses of the rules that were merely later in the
+    // list are not interesting, because first match wins.
+    misses: [mockmatch.HmMiss]
+
+// A rule that was not called as often as it said.
+pub struct HmUnsatisfied
+    rule: Int
+    label: Str
+    wanted: mockexpect.HmTimes
+    calls: Int
+
+// Whether the mock did what was asked of it.
+pub struct HmVerdict
+    satisfied: Bool
+    // Rules whose call constraint was not met.
+    unsatisfied: [HmUnsatisfied]
+    // Requests no rule matched.
+    unexpected: [HmRecorded]
+    // Requests that matched a rule already out of calls.
+    over_served: [HmRecorded]
+
+// Every request the mock has seen, oldest first.
+//
+// `[mutate]` and nothing more: this reads the running server's shared
+// state.
+//
+// ```novo
+// use mockserver
+// use mockverify
+// use std.list
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => println("${list.len(mockverify.recorded(m))}")
+// ```
+pub fn recorded(m: mockserver.HmMock) -> [HmRecorded] [mutate]
+    todo("httpmock-nv.mockverify.recorded")
+
+// How many requests the mock has seen.
+//
+// ```novo
+// use mockserver
+// use mockverify
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => println("${mockverify.request_count(m)}")
+// ```
+pub fn request_count(m: mockserver.HmMock) -> Int [mutate]
+    todo("httpmock-nv.mockverify.request_count")
+
+// The most recent request, or `None`.
+//
+// The assertion a test of one call makes: start, call, look at what
+// arrived.
+//
+// ```novo
+// use mockserver
+// use mockverify
+// use mockmatch
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  =>
+//             match mockverify.last_request(m)
+//                 Some(rec) => println(mockmatch.request_line(rec.request))
+//                 None      => println("nothing yet")
+// ```
+pub fn last_request(m: mockserver.HmMock) -> ?HmRecorded [mutate]
+    todo("httpmock-nv.mockverify.last_request")
+
+// Every request one rule served, oldest first.
+//
+// ```novo
+// use mockserver
+// use mockverify
+// use std.list
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => println("${list.len(mockverify.served_by(m, 0))}")
+// ```
+pub fn served_by(m: mockserver.HmMock, rule: Int) -> [HmRecorded] [mutate]
+    todo("httpmock-nv.mockverify.served_by")
+
+// How many times each rule has been served, by index.
+//
+// The list `mockmatch.decide` takes as its `calls` argument, so a test
+// can take the counts from a running mock and replay a decision
+// against them with no server.
+//
+// ```novo
+// use mockserver
+// use mockverify
+// use std.list
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => println("${list.len(mockverify.call_counts(m))}")
+// ```
+pub fn call_counts(m: mockserver.HmMock) -> [Int] [mutate]
+    todo("httpmock-nv.mockverify.call_counts")
+
+// Every request no rule matched.
+//
+// ```novo
+// use mockserver
+// use mockverify
+// use std.list
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => println("${list.len(mockverify.unexpected(m))}")
+// ```
+pub fn unexpected(m: mockserver.HmMock) -> [HmRecorded] [mutate]
+    todo("httpmock-nv.mockverify.unexpected")
+
+// Forget everything recorded so far, keeping the rules.
+//
+// For a suite that shares one mock across tests — the constraint the
+// standard library's one-server-per-process rule makes common — so each
+// test starts from an empty recording without a bind.
+//
+// ```novo
+// use mockserver
+// use mockverify
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  =>
+//             match mockverify.clear(m)
+//                 Some(e) => println(e.message())
+//                 None    => println("cleared")
+// ```
+pub fn clear(m: mockserver.HmMock) -> ?mockserver.HmError [mutate]
+    todo("httpmock-nv.mockverify.clear")
+
+// Whether the mock did what was asked of it.
+//
+// ```novo
+// use mockserver
+// use mockverify
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => println("${mockverify.verify(m, []).satisfied}")
+// ```
+pub fn verify(m: mockserver.HmMock, rules: [mockserver.HmRule]) -> HmVerdict [mutate]
+    todo("httpmock-nv.mockverify.verify")
+
+// THE RULE, as a pure function.
+//
+// The rules, how many times each was served, and what was recorded, in
+// — a verdict out.  `verify` is this over a running mock's state, and
+// every interesting case in this package's suite is this call.
+//
+// ```novo
+// use mockverify
+//
+// fn main() [io]
+//     println("${mockverify.verify_counts([], [], []).satisfied}")
+// ```
+pub fn verify_counts(rules: [mockserver.HmRule], calls: [Int], seen: [HmRecorded]) -> HmVerdict []
+    todo("httpmock-nv.mockverify.verify_counts")
+
+// Whether a verdict is a pass.
+//
+// ```novo
+// use mockverify
+//
+// fn main() [io]
+//     let v = HmVerdict { satisfied: true, unsatisfied: [], unexpected: [], over_served: [] }
+//     println("${mockverify.satisfied(v)}")
+// ```
+pub fn satisfied(v: HmVerdict) -> Bool []
+    todo("httpmock-nv.mockverify.satisfied")
+
+// The verdict as the text a person reads: what was expected, then what
+// happened.
+//
+// matchers-nv's shape, one line per fact, with the rule's label in
+// front so nobody counts indexes.
+//
+// ```novo
+// use mockverify
+//
+// fn main() [io]
+//     let v = HmVerdict { satisfied: true, unsatisfied: [], unexpected: [], over_served: [] }
+//     println(mockverify.report(v))
+// ```
+pub fn report(v: HmVerdict) -> Str []
+    todo("httpmock-nv.mockverify.report")
+
+// One unsatisfied rule as one line: the index, the label, what was
+// expected, what happened.
+//
+// ```novo
+// use mockexpect
+// use mockverify
+//
+// fn main() [io]
+//     let u = HmUnsatisfied { rule: 1, label: "create a user",
+//                             wanted: mockexpect.exactly(1), calls: 0 }
+//     println(mockverify.unsatisfied_line(u))
+// ```
+pub fn unsatisfied_line(u: HmUnsatisfied) -> Str []
+    todo("httpmock-nv.mockverify.unsatisfied_line")
+
+// Verify, and report a failure through `std.test`.
+//
+// The wrapper a test's last line is, and the only `[io]` function in
+// the module — the same split `snapshot-nv` draws between `check` and
+// `assert_snapshot`, and for the same reason: a verdict can be asserted
+// about, a failure cannot.
+//
+// ```novo
+// use mockserver
+// use mockverify
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => mockverify.assert_verified(m, [])
+// ```
+pub fn assert_verified(m: mockserver.HmMock, rules: [mockserver.HmRule]) [mutate, io]
+    todo("httpmock-nv.mockverify.assert_verified")
+
+// Assert that the mock saw exactly these requests, in this order.
+//
+// The other assertion a test makes, and deliberately separate from
+// `verify`: "it was called" and "it was called with these, in this
+// order" are different claims, and a library that only offered the
+// second makes every test brittle.
+//
+// ```novo
+// use mockmatch
+// use mockserver
+// use mockverify
+//
+// fn main() [io, fs, net, time, mutate, async]
+//     match mockserver.start([])
+//         Err(e) => println(e.message())
+//         Ok(m)  => mockverify.assert_requests(m, [mockmatch.request("GET", "/ping")])
+// ```
+pub fn assert_requests(m: mockserver.HmMock, wanted: [mockmatch.HmRequest]) [mutate, io]
+    todo("httpmock-nv.mockverify.assert_requests")
+
+// The recorded requests as one line each, for a failure message or a
+// `--verbose` run.
+//
+// ```novo
+// use mockverify
+//
+// fn main() [io]
+//     println(mockverify.transcript([]))
+// ```
+pub fn transcript(seen: [HmRecorded]) -> Str []
+    todo("httpmock-nv.mockverify.transcript")

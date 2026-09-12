@@ -1,0 +1,422 @@
+// mockexpect.nv — an expectation, as a value.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// AN EXPECTATION IS DATA AND NOT A REGISTRATION.  Nothing here starts a
+// server, opens a socket or touches the mock: `expect(HmGet, "/users/:id")`
+// builds a struct, the builders answer new structs, and a list of them
+// is handed to `mockserver.start`.  Every function in this module is
+// `[]`.
+//
+// Three things follow, and they are why the shape is worth the extra
+// call.
+//
+//   1. AN EXPECTATION IS TESTABLE ON ITS OWN.  `mockmatch.decide` takes
+//      a list and a request and answers — no port, no process, no
+//      teardown — so the matching half of this package is checked by
+//      ordinary pure tests, which is where a mock library's bugs
+//      actually live.
+//   2. A SUITE CAN SHARE ONE.  The expectation that says "the token
+//      endpoint answers this" is written once at the top of a file and
+//      used by every test in it, because it is a value rather than a
+//      registration on a server that one test tore down.
+//   3. THE ORDER IS THE LIST'S.  First match wins, and the list is the
+//      order — so a specific expectation before a general one is
+//      something a reader can see, rather than a property of the order
+//      registrations happened to run in.
+//
+// THE PATH IS A router-nv PATTERN and not a string.  `/users/:id/posts`
+// captures, `/static/*rest` is a tail, and the trailing-slash and case
+// policies are `RoutePolicy`'s rather than three booleans invented here.
+// A literal string is `path_exact`, which is `parse_pattern` over an
+// escaped literal, so there is still one matcher.
+//
+// THE VALUE MATCHERS ARE matchers-nv's.  A header expectation is a
+// `Matcher<Str>`, so `contains_text` and `matches_regex` mean here
+// exactly what they mean elsewhere in the suite — and `describe` is
+// what makes a miss readable.
+
+use routepat
+
+// The methods an expectation can name.
+//
+// router-nv's `RouteMethod` covers the verbs a router dispatches;
+// `HmMethod` is this package's own because a mock also has to express
+// "any method", which is not a method.
+pub enum HmMethod
+    HmGet
+    HmHead
+    HmPost
+    HmPut
+    HmPatch
+    HmDelete
+    HmOptions
+    // Any method at all.  Its own variant rather than an empty set,
+    // because "I do not care" is a statement a reader of a test should
+    // see spelled out.
+    HmAnyMethod
+
+// How many times an expectation may be served.
+//
+// A constraint on the expectation rather than an assertion afterwards,
+// because the interesting failures are "called twice when it should
+// have been cached" and "never called at all", and both are about a
+// number the mock already knows.
+pub struct HmTimes
+    // Fewest calls that count as satisfied.  `0` means the expectation
+    // is optional.
+    at_least: Int
+    // Most calls the mock will serve.  A request past it is
+    // `HmExhausted` rather than a match, which is what makes "called
+    // twice" a failure at the second call rather than a surprise at
+    // verification.  `0 - 1` means no ceiling.
+    at_most: Int
+
+// One rule: what a request has to look like, and what to answer.
+pub struct HmExpectation
+    // A label for the failure text.  Optional — `""` means the method
+    // and path are the label — and worth setting when two expectations
+    // differ only in a header.
+    label: Str
+    method: HmMethod
+    // The path pattern.  Matching is router-nv's, including the
+    // parameter capture, so `/users/:id` binds `id`.
+    path: routepat.RoutePattern
+    policy: routepat.RoutePolicy
+    // Query parameters that must be present, each with a matcher over
+    // its value.  A parameter the request has and the expectation does
+    // not name is ignored; a mock that required an exact query string
+    // would break on every client that added a trace parameter.
+    query: [HmParamRule]
+    // Headers that must be present, each with a matcher over its
+    // value.  Names are compared case-insensitively, which is RFC
+    // 7230 § 3.2 and not a convenience.
+    headers: [HmParamRule]
+    // The body, as a matcher over its text.  `None` means the body is
+    // not part of the decision.
+    body: ?Matcher<Str>
+    times: HmTimes
+
+// One named thing with a matcher over its value: a query parameter or
+// a header.
+//
+// One struct for both, because the rule is the same shape and the two
+// lists differ only in where the name is looked up.
+pub struct HmParamRule
+    name: Str
+    value: Matcher<Str>
+    // Whether the absence of the name is a miss.  `true` for everything
+    // a caller writes; `false` is how "if this header is present it must
+    // look like this" is expressed, which is a real rule for optional
+    // authentication.
+    required: Bool
+
+// An expectation for a method and a path pattern.
+//
+// The call almost every test makes.  A pattern that does not parse
+// becomes an expectation that matches nothing and says so in its label,
+// rather than a `Result` at every call site — `path_ok` is where a
+// caller is told.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println(mockexpect.expect(HmGet, "/users/:id").label)
+// ```
+pub fn expect(method: HmMethod, pattern: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.expect")
+
+// An expectation for a literal path, with no pattern syntax at all.
+//
+// For a path that contains a `:` or a `*` and means them literally.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println(mockexpect.expect_exact(HmGet, "/a:b/*").label)
+// ```
+pub fn expect_exact(method: HmMethod, path: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.expect_exact")
+
+// Whether a pattern parses, so a caller is told where they wrote it.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     let ok = mockexpect.path_ok("/users/:")
+//     println("${ok}")
+// ```
+pub fn path_ok(pattern: Str) -> Bool []
+    todo("httpmock-nv.mockexpect.path_ok")
+
+// The expectation with a label for the failure text.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println(mockexpect.labelled(mockexpect.expect(HmGet, "/t"), "the token endpoint").label)
+// ```
+pub fn labelled(e: HmExpectation, label: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.labelled")
+
+// The expectation with a different path policy.
+//
+// router-nv's `web_policy` treats `/users` and `/users/` as the same
+// path and folds case; `strict_policy` does neither.  A mock standing
+// in for a real service should use the policy that service uses, and
+// the default here is `web_policy` because that is what a web server
+// does.
+//
+// ```novo
+// use routepat
+// use mockexpect
+//
+// fn main() [io]
+//     let e = mockexpect.with_policy(mockexpect.expect(HmGet, "/t"), routepat.strict_policy())
+//     println("${e.policy.decode_params}")
+// ```
+pub fn with_policy(e: HmExpectation, policy: routepat.RoutePolicy) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_policy")
+
+// The expectation with a required header.
+//
+// ```novo
+// use matchtext
+// use mockexpect
+// use std.list
+//
+// fn main() [io]
+//     let e = mockexpect.with_header(mockexpect.expect(HmGet, "/t"),
+//                                    "Authorization", matchtext.starts_with("Bearer "))
+//     println("${list.len(e.headers)}")
+// ```
+pub fn with_header(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_header")
+
+// The expectation with a header rule that applies only when the header
+// is present.
+//
+// ```novo
+// use matchtext
+// use mockexpect
+// use std.list
+//
+// fn main() [io]
+//     let e = mockexpect.with_optional_header(mockexpect.expect(HmGet, "/t"),
+//                                             "X-Trace", matchtext.is_blank())
+//     println("${list.len(e.headers)}")
+// ```
+pub fn with_optional_header(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_optional_header")
+
+// The expectation with a required header whose value is exactly this.
+//
+// The shorthand for the common case, so a test that only wants an
+// equality does not import a matcher module for it.
+//
+// ```novo
+// use mockexpect
+// use std.list
+//
+// fn main() [io]
+//     let e = mockexpect.with_header_value(mockexpect.expect(HmGet, "/t"),
+//                                          "Accept", "application/json")
+//     println("${list.len(e.headers)}")
+// ```
+pub fn with_header_value(e: HmExpectation, name: Str, value: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_header_value")
+
+// The expectation with a required query parameter.
+//
+// ```novo
+// use matchtext
+// use mockexpect
+// use std.list
+//
+// fn main() [io]
+//     let e = mockexpect.with_query(mockexpect.expect(HmGet, "/s"),
+//                                   "q", matchtext.contains_text("novo"))
+//     println("${list.len(e.query)}")
+// ```
+pub fn with_query(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_query")
+
+// The expectation with a required query parameter whose value is
+// exactly this.
+//
+// ```novo
+// use mockexpect
+// use std.list
+//
+// fn main() [io]
+//     let e = mockexpect.with_query_value(mockexpect.expect(HmGet, "/s"), "page", "2")
+//     println("${list.len(e.query)}")
+// ```
+pub fn with_query_value(e: HmExpectation, name: Str, value: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_query_value")
+
+// The expectation with a matcher over the request body.
+//
+// ```novo
+// use matchtext
+// use mockexpect
+//
+// fn main() [io]
+//     let e = mockexpect.with_body(mockexpect.expect(HmPost, "/u"),
+//                                  matchtext.contains_text("\"name\""))
+//     println(e.label)
+// ```
+pub fn with_body(e: HmExpectation, body: Matcher<Str>) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_body")
+
+// The expectation with a body that must be exactly this text.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println(mockexpect.with_body_text(mockexpect.expect(HmPost, "/u"), "ping").label)
+// ```
+pub fn with_body_text(e: HmExpectation, body: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_body_text")
+
+// The expectation with a body that must be JSON equal to this text.
+//
+// Equal as JSON and not as bytes: member order and whitespace do not
+// distinguish two documents, and a mock that compared them as strings
+// would fail on a client that serialised its fields in another order —
+// which is the commonest false failure in every mock library that has
+// only a text compare.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     let e = mockexpect.with_body_json(mockexpect.expect(HmPost, "/u"), "{\"a\":1}")
+//     println(e.label)
+// ```
+pub fn with_body_json(e: HmExpectation, body: Str) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_body_json")
+
+// No constraint on how many times an expectation is served: at least
+// zero, no ceiling.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.any_times().at_least}")
+// ```
+pub fn any_times() -> HmTimes []
+    todo("httpmock-nv.mockexpect.any_times")
+
+// Exactly `n` calls: at least `n`, at most `n`.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.exactly(1).at_most}")
+// ```
+pub fn exactly(n: Int) -> HmTimes []
+    todo("httpmock-nv.mockexpect.exactly")
+
+// At least `n` calls, with no ceiling.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.at_least(1).at_least}")
+// ```
+pub fn at_least(n: Int) -> HmTimes []
+    todo("httpmock-nv.mockexpect.at_least")
+
+// At most `n` calls, with no floor.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.at_most(2).at_most}")
+// ```
+pub fn at_most(n: Int) -> HmTimes []
+    todo("httpmock-nv.mockexpect.at_most")
+
+// The expectation with a call constraint.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     let e = mockexpect.with_times(mockexpect.expect(HmGet, "/t"), mockexpect.exactly(1))
+//     println("${e.times.at_most}")
+// ```
+pub fn with_times(e: HmExpectation, times: HmTimes) -> HmExpectation []
+    todo("httpmock-nv.mockexpect.with_times")
+
+// Whether a number of calls satisfies a constraint.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.times_satisfied(mockexpect.exactly(1), 1)}")
+// ```
+pub fn times_satisfied(t: HmTimes, calls: Int) -> Bool []
+    todo("httpmock-nv.mockexpect.times_satisfied")
+
+// Whether one more call would exceed the ceiling.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.times_exhausted(mockexpect.exactly(1), 1)}")
+// ```
+pub fn times_exhausted(t: HmTimes, calls: Int) -> Bool []
+    todo("httpmock-nv.mockexpect.times_exhausted")
+
+// The method's name in the wire spelling: `GET`, `POST`, and `*` for
+// `HmAnyMethod`.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println(mockexpect.method_name(HmAnyMethod))
+// ```
+pub fn method_name(m: HmMethod) -> Str []
+    todo("httpmock-nv.mockexpect.method_name")
+
+// The method a wire spelling names, or `None`.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     match mockexpect.method_named("PROPFIND")
+//         Some(_) => println("known")
+//         None    => println("not a method this package names")
+// ```
+pub fn method_named(name: Str) -> ?HmMethod []
+    todo("httpmock-nv.mockexpect.method_named")
+
+// The one-line description of an expectation, used in every failure.
+//
+// The label when there is one, otherwise the method and the pattern,
+// with the header and query rules appended as matchers-nv describes
+// them.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println(mockexpect.describe(mockexpect.expect(HmGet, "/users/:id")))
+// ```
+pub fn describe(e: HmExpectation) -> Str []
+    todo("httpmock-nv.mockexpect.describe")

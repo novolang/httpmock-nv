@@ -1,0 +1,146 @@
+// mockreply_tests.nv — a reply is a value, so it is compared and not
+// invoked.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
+//
+// THE TEMPLATE IS THE ONLY CLEVERNESS AND IT IS DELIBERATELY SMALL.
+// `${name}` from the path bindings, no conditionals and no arithmetic —
+// because a mock whose responses are programs is a second
+// implementation of the service under test.  The cases here are the two
+// edges of that: an unbound name is LEFT rather than emptied, and a
+// literal `${` can be written.
+
+use std.test
+use std.str
+use std.list
+use mockmatch
+use mockreply
+
+fn id_binding() -> [HmBinding]
+    [HmBinding { name: "id", value: "7" }]
+
+@test
+fn test_the_constructors_set_the_status_and_the_content_type() [io]
+    test.case("a bare status has no body")
+    test.assert(mockreply.status(204).body == "")
+
+    test.case("text is text/plain")
+    match mockreply.header(mockreply.text(200, "pong"), "content-type")
+        None    => test.assert(false)
+        Some(v) => test.assert(str.contains(v, "text/plain"))
+
+    test.case("json is application/json")
+    match mockreply.header(mockreply.json(200, "{}"), "Content-Type")
+        None    => test.assert(false)
+        Some(v) => test.assert(str.contains(v, "application/json"))
+
+    test.case("and body takes the caller's type")
+    match mockreply.header(mockreply.body(200, "text/csv", "a,b\n"), "content-type")
+        None    => test.assert(false)
+        Some(v) => test.assert(str.contains(v, "text/csv"))
+
+@test
+fn test_a_malformed_json_body_is_sent_exactly_as_written() [io]
+    // A mock that refused malformed JSON could not be used to test what
+    // a client does with malformed JSON, which is the case people reach
+    // for a mock to test.
+    test.case("the body is not validated")
+    test.assert(mockreply.json(200, "{not json").body == "{not json")
+
+@test
+fn test_a_redirect_carries_its_location() [io]
+    match mockreply.header(mockreply.redirect(302, "/elsewhere"), "Location")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "/elsewhere")
+
+@test
+fn test_a_header_is_added_and_found_without_case() [io]
+    let r = mockreply.with_header(mockreply.status(200), "ETag", "abc")
+
+    test.case("it is on the reply")
+    test.assert(list.len(r.headers) == 1)
+
+    test.case("and the lookup folds case")
+    match mockreply.header(r, "etag")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "abc")
+
+@test
+fn test_a_delay_is_a_field_so_a_test_can_assert_it_without_waiting() [io]
+    test.case("no delay by default")
+    test.assert(mockreply.status(200).delay_ms == 0)
+
+    test.case("and the one a timeout test needs")
+    test.assert(mockreply.with_delay(mockreply.status(200), 750).delay_ms == 750)
+
+@test
+fn test_a_template_substitutes_from_the_path_bindings() [io]
+    let r = mockreply.render(mockreply.json(200, "{\"id\":\${id}}"), id_binding())
+
+    test.case("the binding is in the body")
+    test.assert(str.contains(r.body, "7"))
+
+    test.case("and the placeholder is gone")
+    test.assert(str.contains(r.body, "\${id}") == false)
+
+@test
+fn test_an_unbound_name_is_left_and_not_emptied() [io]
+    // A response carrying `${id}` where `:id` was never in the pattern
+    // is a mistake in the test, and a silent empty string hides it.
+    let r = mockreply.render(mockreply.text(200, "user \${slug}"), id_binding())
+
+    test.case("the name survives, visible")
+    test.assert(str.contains(r.body, "\${slug}"))
+
+@test
+fn test_a_header_value_is_templated_too() [io]
+    let r = mockreply.render(mockreply.with_header(mockreply.status(200),
+                                                   "Location", "/users/\${id}"),
+                             id_binding())
+
+    match mockreply.header(r, "Location")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "/users/7")
+
+@test
+fn test_a_literal_dollar_brace_can_be_written() [io]
+    // Which a mock standing in for a template service needs.
+    let r = mockreply.render(mockreply.body_literal(mockreply.text(200, "raw \${id}")),
+                             id_binding())
+
+    test.case("templating is off")
+    test.assert(mockreply.body_literal(mockreply.text(200, "x")).templated == false)
+
+    test.case("and the body is untouched")
+    test.assert(str.contains(r.body, "\${id}"))
+
+@test
+fn test_the_template_names_are_reportable() [io]
+    // So a test can assert that a reply's names are the ones its
+    // pattern binds — the one error `render` deliberately does not
+    // raise.
+    let names = mockreply.template_names(mockreply.text(200, "\${a} and \${b}"))
+
+    test.case("both names, in order")
+    test.assert(list.len(names) == 2)
+
+@test
+fn test_the_two_generated_replies_have_different_statuses_on_purpose() [io]
+    // A client that retries on 404 and not on 409 behaves differently
+    // in the two cases, and a test about the retry can tell them apart.
+    test.case("nothing matched is 404")
+    test.assert(mockreply.unmatched(mockmatch.request("GET", "/x"), []).status == 404)
+
+    test.case("out of calls is 409")
+    test.assert(mockreply.exhausted("the token endpoint", 1).status == 409)
+
+    test.case("and the 404 carries the report, not an empty body")
+    test.assert(str.len(mockreply.unmatched(mockmatch.request("GET", "/x"), []).body) > 0)
+
+@test
+fn test_a_reply_renders_one_line_for_a_log() [io]
+    test.case("the status and the body length")
+    let line = mockreply.reply_line(mockreply.text(200, "pong"))
+    test.assert(str.contains(line, "200"))
+    test.assert(str.contains(line, "\n") == false)

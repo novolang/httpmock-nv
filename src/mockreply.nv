@@ -1,0 +1,253 @@
+// mockreply.nv — what an expectation answers with.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A RESPONSE IS A VALUE AND NOT A HANDLER.  `http.server`'s handler
+// type is `fn(HttpRequest) -> HttpResponse [io, fs, net, mutate, time,
+// async]` — a plain function with a six-label row — so a mock whose
+// responses were handlers would make every canned reply cost that row
+// and would make a response impossible to compare, print or store.
+//
+// Here `HmReply` is status, headers and body. `mockserver` converts one
+// to the standard library's `HttpResponse` at the last moment, which is
+// the only place in this package that mentions that type — and the
+// reason every test of what a mock answers is a comparison of two
+// values.
+//
+// THE ONE THING A VALUE CANNOT EXPRESS is a reply computed from the
+// request, and the `templated` field is the deliberate, narrow answer:
+// `${id}` in a body or a header is substituted from the path bindings
+// the match produced. Narrow on purpose — no conditionals, no
+// arithmetic, no escape into code — because a mock whose responses are
+// programs is a second implementation of the service under test, which
+// is how a suite ends up testing the mock.
+//
+// A DELAY IS A FIELD AND NOT A SLEEP CALL.  `delay_ms` makes "the
+// client must time out" testable, and it is on the value so that a test
+// of the DECISION can assert the delay without waiting for it.
+
+use mockmatch
+
+// One header on a reply.
+//
+// This package's own pair rather than the standard library's
+// `HttpHeader`, so the whole of `mockreply` stays `[]` and comparable —
+// see the module comment.
+pub struct HmHeader
+    name: Str
+    value: Str
+
+// What the mock sends back.
+pub struct HmReply
+    status: Int
+    headers: [HmHeader]
+    // The body as text.  `${name}` is substituted from the path
+    // bindings when the reply is rendered; `render` is where that
+    // happens and `body_literal` is how a body containing a literal
+    // `${` is written.
+    body: Str
+    // Milliseconds to wait before answering.  `0` for none.  On the
+    // value so a test can assert it without waiting.
+    delay_ms: Int
+    // Whether `${name}` in the body and the headers is substituted.
+    // False for a body that is meant to contain one literally.
+    templated: Bool
+
+// A reply with a status and nothing else.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.status(204)
+//     println("${r.status}")
+// ```
+pub fn status(code: Int) -> HmReply []
+    todo("httpmock-nv.mockreply.status")
+
+// A `200` with a text body and `text/plain; charset=utf-8`.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     println(mockreply.text(200, "pong").body)
+// ```
+pub fn text(code: Int, body: Str) -> HmReply []
+    todo("httpmock-nv.mockreply.text")
+
+// A reply with a JSON body and `application/json; charset=utf-8`.
+//
+// The body is sent exactly as written — this does not validate it,
+// because a mock that refused malformed JSON could not be used to test
+// what a client does with malformed JSON, which is the case people
+// reach for a mock to test.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.json(200, "{\"ok\":true}")
+//     println("${r.status}")
+// ```
+pub fn json(code: Int, body: Str) -> HmReply []
+    todo("httpmock-nv.mockreply.json")
+
+// A reply with a body and a content type the caller names.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.body(200, "text/csv", "a,b\n")
+//     println("${r.status}")
+// ```
+pub fn body(code: Int, content_type: Str, payload: Str) -> HmReply []
+    todo("httpmock-nv.mockreply.body")
+
+// A `3xx` with a `Location`.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.redirect(302, "/elsewhere")
+//     println("${r.status}")
+// ```
+pub fn redirect(code: Int, location: Str) -> HmReply []
+    todo("httpmock-nv.mockreply.redirect")
+
+// The reply with one more header.
+//
+// ```novo
+// use mockreply
+// use std.list
+//
+// fn main() [io]
+//     let r = mockreply.with_header(mockreply.status(200), "ETag", "abc")
+//     println("${list.len(r.headers)}")
+// ```
+pub fn with_header(r: HmReply, name: Str, value: Str) -> HmReply []
+    todo("httpmock-nv.mockreply.with_header")
+
+// The reply with a delay before it is sent.
+//
+// What makes "the client gives up after 500 ms" a test rather than a
+// hope.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.with_delay(mockreply.status(200), 750)
+//     println("${r.delay_ms}")
+// ```
+pub fn with_delay(r: HmReply, ms: Int) -> HmReply []
+    todo("httpmock-nv.mockreply.with_delay")
+
+// The reply with template substitution turned off.
+//
+// For a body that contains a literal `${`, which a mock standing in for
+// a template service will.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.body_literal(mockreply.text(200, "cost: \$42"))
+//     println("${r.templated}")
+// ```
+pub fn body_literal(r: HmReply) -> HmReply []
+    todo("httpmock-nv.mockreply.body_literal")
+
+// The reply, with `${name}` substituted from the path bindings.
+//
+// Applied to the body and to every header value.  An unbound name is
+// left exactly as written rather than replaced with nothing: a response
+// carrying `${id}` where `:id` was never in the pattern is a mistake in
+// the test, and a silent empty string hides it.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.render(mockreply.text(200, "user \${id}"), [])
+//     println(r.body)
+// ```
+pub fn render(r: HmReply, bindings: [mockmatch.HmBinding]) -> HmReply []
+    todo("httpmock-nv.mockreply.render")
+
+// Every `${name}` a reply names, in order.
+//
+// So a test can assert that a template's names are the ones the pattern
+// binds — which is the one error `render` deliberately does not raise.
+//
+// ```novo
+// use mockreply
+// use std.list
+//
+// fn main() [io]
+//     let names = mockreply.template_names(mockreply.text(200, "user \${id}"))
+//     println("${list.len(names)}")
+// ```
+pub fn template_names(r: HmReply) -> [Str] []
+    todo("httpmock-nv.mockreply.template_names")
+
+// A header's value on a reply, compared case-insensitively.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     match mockreply.header(mockreply.json(200, "{}"), "content-type")
+//         Some(v) => println(v)
+//         None    => println("absent")
+// ```
+pub fn header(r: HmReply, name: Str) -> ?Str []
+    todo("httpmock-nv.mockreply.header")
+
+// The reply the mock sends when nothing matched: `404`, with
+// `mockmatch.unmatched_report` as the body.
+//
+// A body and not an empty 404, because the first thing a person does
+// with an unexpected 404 is print the response — and what they should
+// find there is which expectation missed and why.
+//
+// ```novo
+// use mockmatch
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.unmatched(mockmatch.request("GET", "/x"), [])
+//     println("${r.status}")
+// ```
+pub fn unmatched(r: mockmatch.HmRequest, misses: [mockmatch.HmMiss]) -> HmReply []
+    todo("httpmock-nv.mockreply.unmatched")
+
+// The reply the mock sends when an expectation is out of calls: `409`,
+// naming the expectation and its ceiling.
+//
+// A different status from the unmatched one, on purpose: a client that
+// retries on 404 and not on 409 then behaves differently in the two
+// cases, and a test that is about the retry can tell them apart.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     let r = mockreply.exhausted("the token endpoint", 1)
+//     println("${r.status}")
+// ```
+pub fn exhausted(label: Str, limit: Int) -> HmReply []
+    todo("httpmock-nv.mockreply.exhausted")
+
+// The reply as one line for a log: the status and the body's length.
+//
+// ```novo
+// use mockreply
+//
+// fn main() [io]
+//     println(mockreply.reply_line(mockreply.text(200, "pong")))
+// ```
+pub fn reply_line(r: HmReply) -> Str []
+    todo("httpmock-nv.mockreply.reply_line")

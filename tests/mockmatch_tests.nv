@@ -1,0 +1,227 @@
+// mockmatch_tests.nv — every way a mock is confusing, without a socket.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
+//
+// THIS FILE IS WHY `decide` IS `[]`.  Every case below is a real
+// support question from a real mock library — "why did my header not
+// match", "why does the trailing slash matter", "why does my JSON body
+// fail when the fields are the same" — and each one is a value in and a
+// value out, with no port, no process and nothing to tear down.
+
+use std.test
+use std.str
+use std.list
+use matchtext
+use mockexpect
+use mockmatch
+
+fn users_route() -> HmExpectation
+    mockexpect.expect(HmGet, "/users/:id")
+
+@test
+fn test_a_header_name_is_compared_without_case() [io]
+    // RFC 7230 § 3.2, and the single commonest reason a hand-rolled
+    // mock does not match: the client sends `authorization` and the
+    // expectation wrote `Authorization`.
+    let e = mockexpect.with_header(users_route(), "Authorization",
+                                   matchtext.starts_with("Bearer "))
+    let r = mockmatch.with_header(mockmatch.request("GET", "/users/7"),
+                                  "authorization", "Bearer t0ken")
+
+    test.case("it matches")
+    test.assert(mockmatch.matches(e, r))
+
+    test.case("and the lookup folds case too")
+    match mockmatch.header(r, "AUTHORIZATION")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "Bearer t0ken")
+
+@test
+fn test_a_miss_names_the_field_and_not_just_the_expectation() [io]
+    let e = mockexpect.with_header(users_route(), "Authorization",
+                                   matchtext.starts_with("Bearer "))
+
+    test.case("a wrong method is the method field")
+    match mockmatch.miss_of(e, 0, mockmatch.request("POST", "/users/7"))
+        None    => test.assert(false)
+        Some(m) => test.assert(mockmatch.field_name(m.field) == "method")
+
+    test.case("a wrong path is the path field")
+    match mockmatch.miss_of(e, 0, mockmatch.request("GET", "/accounts/7"))
+        None    => test.assert(false)
+        Some(m) => test.assert(mockmatch.field_name(m.field) == "path")
+
+    test.case("a wrong header names the header")
+    let bad = mockmatch.with_header(mockmatch.request("GET", "/users/7"),
+                                    "Authorization", "Basic dXNlcg==")
+    match mockmatch.miss_of(e, 0, bad)
+        None    => test.assert(false)
+        Some(m) => test.assert(str.contains(mockmatch.field_name(m.field), "Authorization"))
+
+@test
+fn test_a_miss_carries_what_was_wanted_and_what_arrived() [io]
+    // matchers-nv's `describe` and `describe_mismatch`, which is what
+    // makes the report a sentence instead of two indexes.
+    let e = mockexpect.with_header(users_route(), "Authorization",
+                                   matchtext.starts_with("Bearer "))
+    let bad = mockmatch.with_header(mockmatch.request("GET", "/users/7"),
+                                    "Authorization", "Basic dXNlcg==")
+
+    match mockmatch.miss_of(e, 0, bad)
+        None    => test.assert(false)
+        Some(m) =>
+            test.case("wanted is the matcher's own description")
+            test.assert(str.contains(m.wanted, "Bearer "))
+
+            test.case("got is what the matcher says about the value")
+            test.assert(str.contains(m.got, "Basic"))
+
+            test.case("and the index is carried, so a report needs no list")
+            test.assert(m.expectation == 0)
+
+@test
+fn test_the_first_field_in_the_fixed_order_is_the_one_reported() [io]
+    // Method, path, query, headers, body.  An expectation that differs
+    // in four fields is almost always wrong in the first one, and four
+    // lines per expectation makes the report unreadable exactly when it
+    // matters.
+    let e = mockexpect.with_header(users_route(), "Authorization",
+                                   matchtext.starts_with("Bearer "))
+
+    test.case("wrong method AND wrong path AND no header reports the method")
+    match mockmatch.miss_of(e, 0, mockmatch.request("POST", "/accounts/7"))
+        None    => test.assert(false)
+        Some(m) => test.assert(mockmatch.field_name(m.field) == "method")
+
+@test
+fn test_first_match_wins_and_the_list_is_the_order() [io]
+    let specific = mockexpect.expect(HmGet, "/users/me")
+    let general = users_route()
+
+    test.case("the specific one first serves /users/me")
+    match mockmatch.decide([specific, general], [], mockmatch.request("GET", "/users/me"))
+        HmServe(i, _)        => test.assert(i == 0)
+        HmUnmatched(_)       => test.assert(false)
+        HmExhausted(_, _, _) => test.assert(false)
+
+    test.case("the general one first takes it instead")
+    match mockmatch.decide([general, specific], [], mockmatch.request("GET", "/users/me"))
+        HmServe(i, _)        => test.assert(i == 0)
+        HmUnmatched(_)       => test.assert(false)
+        HmExhausted(_, _, _) => test.assert(false)
+
+@test
+fn test_an_expectation_out_of_calls_is_exhausted_and_not_unmatched() [io]
+    // "Called twice" and "never matched" are different bugs, and a mock
+    // that reported the second for the first sends a reader looking at
+    // their matchers.
+    let once = mockexpect.with_times(users_route(), mockexpect.exactly(1))
+
+    test.case("the first call serves")
+    test.assert(mockmatch.decision_name(mockmatch.decide([once], [0],
+                                        mockmatch.request("GET", "/users/7"))) == "serve")
+
+    test.case("the second is exhausted, with the ceiling named")
+    match mockmatch.decide([once], [1], mockmatch.request("GET", "/users/7"))
+        HmExhausted(i, _, limit) =>
+            test.assert(i == 0)
+            test.assert(limit == 1)
+        HmServe(_, _)            => test.assert(false)
+        HmUnmatched(_)           => test.assert(false)
+
+@test
+fn test_nothing_matching_answers_every_reason() [io]
+    let a = mockexpect.expect(HmGet, "/a")
+    let b = mockexpect.expect(HmPost, "/b")
+
+    match mockmatch.decide([a, b], [], mockmatch.request("PUT", "/c"))
+        HmServe(_, _)        => test.assert(false)
+        HmExhausted(_, _, _) => test.assert(false)
+        HmUnmatched(misses)  =>
+            test.case("one miss per expectation")
+            test.assert(list.len(misses) == 2)
+
+            test.case("and the report names the request that arrived")
+            let text = mockmatch.unmatched_report(mockmatch.request("PUT", "/c"), misses)
+            test.assert(str.contains(text, "PUT"))
+            test.assert(str.contains(text, "/c"))
+
+@test
+fn test_a_path_parameter_comes_back_bound() [io]
+    // So a reply that echoes `:id` does not have to re-run the match.
+    let bs = mockmatch.bindings(users_route(), mockmatch.request("GET", "/users/7"))
+
+    test.case("one binding")
+    test.assert(list.len(bs) == 1)
+
+    test.case("named and valued")
+    match mockmatch.binding(bs, "id")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "7")
+
+    test.case("and an unbound name is None rather than an empty string")
+    match mockmatch.binding(bs, "slug")
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_a_query_string_on_the_target_is_parsed_once() [io]
+    let r = mockmatch.request_target("GET", "/search?q=novo&page=2")
+
+    test.case("the path has no query on it")
+    test.assert(r.path == "/search")
+
+    test.case("and the pairs are in the order they appeared")
+    test.assert(list.len(r.query) == 2)
+    match list.first(r.query)
+        None    => test.assert(false)
+        Some(b) => test.assert(b.name == "q")
+
+@test
+fn test_a_json_body_is_compared_as_json_and_not_as_text() [io]
+    // The commonest false failure in every mock library that has only a
+    // text compare: a client that serialised its fields in another
+    // order.
+    test.case("member order does not distinguish two documents")
+    test.assert(mockmatch.json_equal("{\"a\":1,\"b\":2}", "{\"b\":2,\"a\":1}"))
+
+    test.case("whitespace does not either")
+    test.assert(mockmatch.json_equal("{\"a\": 1}", "{\"a\":1}"))
+
+    test.case("a different value does")
+    test.assert(mockmatch.json_equal("{\"a\":1}", "{\"a\":2}") == false)
+
+    test.case("and text that is not JSON compares as text, so the call is total")
+    test.assert(mockmatch.json_equal("hello", "hello"))
+
+@test
+fn test_a_body_rule_reads_the_body_that_was_sent() [io]
+    let e = mockexpect.with_body_text(mockexpect.expect(HmPost, "/u"), "ping")
+
+    test.case("the right body matches")
+    test.assert(mockmatch.matches(e, mockmatch.with_body(mockmatch.request("POST", "/u"),
+                                                         "ping")))
+
+    test.case("and the wrong one does not")
+    test.assert(mockmatch.matches(e, mockmatch.with_body(mockmatch.request("POST", "/u"),
+                                                         "pong")) == false)
+
+@test
+fn test_the_report_lines_are_the_words_matchers_nv_uses() [io]
+    let m = matchtext.starts_with("Bearer ")
+
+    test.case("wanted comes from describe")
+    test.assert(str.contains(mockmatch.describe_wanted(m), "Bearer "))
+
+    test.case("got comes from describe_mismatch")
+    test.assert(str.contains(mockmatch.describe_got(m, "Basic dXNlcg=="), "Basic"))
+
+    test.case("one miss is one line")
+    let miss = HmMiss { expectation: 0, label: "the token endpoint",
+                        field: HmMethodField, wanted: "GET", got: "POST" }
+    test.assert(str.contains(mockmatch.miss_line(miss), "\n") == false)
+
+    test.case("and a request is one line too")
+    test.assert(str.contains(mockmatch.request_line(mockmatch.request("GET", "/users/7")),
+                             "/users/7"))

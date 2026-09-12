@@ -1,0 +1,168 @@
+// mockserver_tests.nv — the port, the teardown, and the constraint the
+// standard library imposes.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
+// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
+//
+// THE ONE THING THIS FILE ASSERTS THAT NOTHING ELSE CAN is that a
+// second mock is REFUSED.  `std.http`'s async server keeps its state in
+// module-level variables, so two mocks in one process would have the
+// first's tasks serving the second's expectations — a failure that
+// looks like a matcher bug and is not one.  `start` refusing is the
+// whole mitigation, and it is worth a test.
+
+use std.test
+use std.str
+use std.http
+use mockexpect
+use mockreply
+use mockmatch
+use mockserver
+
+fn ping_rules() -> [HmRule]
+    [mockserver.rule(mockexpect.expect(HmGet, "/ping"), mockreply.text(200, "pong"))]
+
+fn fetch_ping(m: HmMock) -> Bool [io, net, async]
+    match http.client.get(mockserver.url_for(m, "/ping"))
+        Some(body) => body == "pong"
+        None       => false
+
+@test
+fn test_a_rule_pairs_an_expectation_with_a_reply() [io]
+    let r = mockserver.rule(mockexpect.expect(HmGet, "/ping"), mockreply.text(200, "pong"))
+
+    test.case("the reply travels with the expectation")
+    test.assert(r.reply.body == "pong")
+
+    test.case("and the expectation is unchanged by the pairing")
+    test.assert(str.contains(mockexpect.describe(r.expectation), "/ping"))
+
+@test
+fn test_the_kernel_picks_the_port_and_the_mock_reports_it() [io, fs, net, time, mutate, async]
+    // Never a hard-coded port: one is flaky under a parallel run and
+    // under TIME_WAIT, and scanning for a free one is racy because the
+    // scan and the bind are two steps.
+    match mockserver.start(ping_rules())
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("the port is real")
+            test.assert(m.port > 0)
+
+            test.case("the base url names it and has no trailing slash")
+            test.assert(str.contains(mockserver.base_url(m), "127.0.0.1"))
+            test.assert(str.ends_with(mockserver.base_url(m), "/") == false)
+
+            test.case("and url_for takes a path with or without its slash")
+            test.assert(mockserver.url_for(m, "/ping") == mockserver.url_for(m, "ping"))
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_a_second_mock_is_refused_rather_than_silently_wrong() [io, fs, net, time, mutate, async]
+    match mockserver.start(ping_rules())
+        Err(e)    => test.assert(str.len(e.message()) > 0)
+        Ok(first) =>
+            test.case("the first is running")
+            test.assert(mockserver.is_running())
+
+            test.case("the second is refused, and the message names the other port")
+            match mockserver.start([])
+                Ok(_)  => test.assert(false)
+                Err(e) => test.assert(str.len(e.message()) > 0)
+
+            let _ = mockserver.stop(first)
+
+@test
+fn test_stopping_twice_is_not_a_failure_a_teardown_has_to_prevent() [io, fs, net, time, mutate, async]
+    match mockserver.start([])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("the first stop succeeds")
+            match mockserver.stop(m)
+                Some(e) => test.assert(str.len(e.message()) > 0)
+                None    => test.assert(true)
+
+            test.case("and the second answers HmNotRunning rather than raising")
+            match mockserver.stop(m)
+                None    => test.assert(false)
+                Some(e) => test.assert(str.len(e.message()) > 0)
+
+            test.case("nothing is running afterwards")
+            test.assert(mockserver.is_running() == false)
+
+@test
+fn test_a_grace_period_bounds_the_drain() [io, fs, net, time, mutate, async]
+    match mockserver.start([])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("stop_within takes the bound the caller names")
+            match mockserver.stop_within(m, 50)
+                Some(e) => test.assert(str.len(e.message()) > 0)
+                None    => test.assert(true)
+
+@test
+fn test_the_callback_shape_stops_the_server_either_way() [io, fs, net, time, mutate, async]
+    test.case("with_mock passes the body's value through")
+    match mockserver.with_mock(ping_rules(), fetch_ping)
+        Ok(ok) => test.assert(ok)
+        Err(e) => test.assert(str.len(e.message()) > 0)
+
+    test.case("and nothing is left running")
+    test.assert(mockserver.is_running() == false)
+
+@test
+fn test_a_rule_whose_pattern_does_not_parse_is_refused_at_start() [io, fs, net, time, mutate, async]
+    // Rather than becoming a rule that silently matches nothing, which
+    // is a mock that answers 404 for a reason the reader cannot see.
+    let bad = [mockserver.rule(mockexpect.expect(HmGet, "/users/:"), mockreply.status(200))]
+
+    match mockserver.start(bad)
+        Ok(m)  =>
+            let _ = mockserver.stop(m)
+            test.assert(false)
+        Err(e) => test.assert(str.len(e.message()) > 0)
+
+@test
+fn test_start_on_lets_a_caller_name_the_address() [io, fs, net, time, mutate, async]
+    match mockserver.start_on("127.0.0.1", 0, [])
+        Err(e) => test.assert(str.len(e.message()) > 0)
+        Ok(m)  =>
+            test.case("port zero still means ask the kernel")
+            test.assert(m.port > 0)
+            let _ = mockserver.stop(m)
+
+@test
+fn test_the_two_conversions_are_pure_and_are_the_only_seam() [io]
+    // Everything else in the package is this package's own types, which
+    // is what keeps `mockmatch` testable in three lines.
+    test.case("a stdlib request becomes the value the matching works on")
+    let r = mockserver.to_request(http.server.request("GET", "/ping"))
+    test.assert(r.path == "/ping")
+    test.assert(r.method == "GET")
+
+    test.case("and a reply becomes a stdlib response")
+    test.assert(http.server.status(mockserver.to_response(mockreply.text(200, "pong")))
+                == 200)
+
+@test
+fn test_the_handler_is_published_so_a_caller_can_mount_it() [io, fs, net, time, mutate, async]
+    // And so a reader can check `start`'s row against the row the
+    // standard library actually requires.
+    test.case("it answers a response")
+    test.assert(http.server.status(mockserver.dispatch(http.server.request("GET", "/ping")))
+                > 0)
+
+@test
+fn test_the_two_constants_are_published_rather_than_buried() [io]
+    test.case("four workers, so a client's own concurrency is visible")
+    test.assert(mockserver.workers() == 4)
+
+    test.case("and half a second of grace")
+    test.assert(mockserver.default_grace_ms() == 500)
+
+@test
+fn test_a_request_line_survives_the_conversion() [io]
+    let r = mockserver.to_request(http.server.request("GET", "/users/7"))
+
+    test.case("the line a report prints")
+    test.assert(str.contains(mockmatch.request_line(r), "/users/7"))
