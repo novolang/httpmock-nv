@@ -1,6 +1,6 @@
 [package]
 name        = "httpmock-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "A stub HTTP server for tests: expectations are values, the request-to-response DECISION is a pure function that reports which expectation missed and on which field, the mock records every request whether or not it matched, and verification reads like a matchers-nv failure.  The server binds port 0 and reports what the kernel gave it, so nothing is hard-coded and nothing races.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 
