@@ -85,8 +85,10 @@ fn test_the_client_authenticates() [io, fs, net, time, mutate, async]
                    mockexpect.with_header(mockexpect.expect(HmGet, "/users/:id"),
                                           "Authorization",
                                           matchtext.starts_with("Bearer ")),
-                   // `${id}` is replaced by what the path bound.
-                   mockreply.json(200, "{\"id\":${id}}"))]
+                   // `\${id}` escapes novo-lang's own interpolation, so
+                   // the literal `${id}` reaches the mock, which
+                   // replaces it with what the path bound.
+                   mockreply.json(200, "{\"id\":\${id}}"))]
 
     // The server is started, the body runs, and the server is stopped
     // whether the body returned or panicked.

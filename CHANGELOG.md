@@ -8,7 +8,17 @@ with the pre-1.0 rule that a breaking change bumps the MINOR number.
 ## 0.0.2 — 2026-09-16
 
 README rewritten to the package README style guide
-(docs/writing-a-readme.md); no change to the interface.
+(docs/writing-a-readme.md).
+
+### Fixed
+
+- The README's example escapes the reply template.  It wrote
+  `"{\"id\":${id}}"`, which novo-lang interpolates at the call site —
+  `id` is not a variable there, so the block failed to compile with
+  `E2003` and `novo pkg publish` refused the release over it.  `\${id}`
+  is the spelling the `mockreply` doc comments already use: it passes a
+  literal `${id}` through to `mockreply.render`, which is what
+  substitutes the path binding.
 
 ## 0.0.1 — 2026-09-11
 
