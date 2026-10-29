@@ -1,8 +1,6 @@
 // mockreply_tests.nv — a reply is a value, so it is compared and not
 // invoked.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
 //
 // THE TEMPLATE IS THE ONLY CLEVERNESS AND IT IS DELIBERATELY SMALL.
 // `${name}` from the path bindings, no conditionals and no arithmetic —

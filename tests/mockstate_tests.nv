@@ -1,0 +1,46 @@
+// mockstate_tests.nv — the held rules, the counts and the recording, with
+// no server in front of them.
+
+use std.test
+use std.list
+use mockexpect
+use mockmatch
+use mockreply
+use mockstate
+
+@test
+fn test_the_recording_counts_what_it_is_told_and_forgets_on_request() [io, mutate]
+    let es = [mockexpect.expect(HmGet, "/a"), mockexpect.expect(HmGet, "/b")]
+    mockstate.begin(es, [mockreply.status(200), mockreply.status(201)])
+
+    test.case("the rules are held in order, with zero counts")
+    test.assert(list.len(mockstate.expectations()) == 2)
+    test.assert(mockstate.replies()[1].status == 201)
+    test.assert(mockstate.counts() == [0, 0])
+    test.assert(mockstate.log_size() == 0)
+
+    test.case("a served request raises its rule's count and is recorded")
+    mockstate.note(mockmatch.request("GET", "/b"), 1, 201, [])
+    test.assert(mockstate.counts() == [0, 1])
+    test.assert(mockstate.log_size() == 1)
+    test.assert(mockstate.log_request(0).path == "/b")
+    test.assert(mockstate.log_served(0) == 1)
+    test.assert(mockstate.log_status(0) == 201)
+
+    test.case("an unserved request is recorded with its misses and raises no count")
+    let miss = HmMiss { expectation: 0, label: "x", field: HmPathField, wanted: "/a", got: "/c" }
+    mockstate.note(mockmatch.request("GET", "/c"), 0 - 1, 404, [miss])
+    test.assert(mockstate.counts() == [0, 1])
+    test.assert(list.len(mockstate.log_misses(1)) == 1)
+    test.assert(mockstate.log_misses(1)[0].got == "/c")
+
+    test.case("a copy of the counts is not the counts")
+    var copy = mockstate.counts()
+    copy[0] = 9
+    test.assert(mockstate.counts() == [0, 1])
+
+    test.case("forgetting keeps the rules and zeroes the rest")
+    mockstate.forget()
+    test.assert(list.len(mockstate.expectations()) == 2)
+    test.assert(mockstate.counts() == [0, 0])
+    test.assert(mockstate.log_size() == 0)

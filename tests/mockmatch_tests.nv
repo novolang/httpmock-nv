@@ -1,8 +1,5 @@
 // mockmatch_tests.nv — every way a mock is confusing, without a socket.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
-//
 // THIS FILE IS WHY `decide` IS `[]`.  Every case below is a real
 // support question from a real mock library — "why did my header not
 // match", "why does the trailing slash matter", "why does my JSON body

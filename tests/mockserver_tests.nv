@@ -1,8 +1,6 @@
 // mockserver_tests.nv — the port, the teardown, and the constraint the
 // standard library imposes.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
 //
 // THE ONE THING THIS FILE ASSERTS THAT NOTHING ELSE CAN is that a
 // second mock is REFUSED.  `std.http`'s async server keeps its state in

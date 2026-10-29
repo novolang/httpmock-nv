@@ -1,0 +1,305 @@
+// matching_tests.nv — the corners of the decision, as values in and values
+// out: every field of an expectation, every shape of a request target, the
+// path policies, and the rendering of a miss.  No test here starts a
+// server.
+
+use std.test
+use std.str
+use std.list
+use routepat
+use matchtext
+use mockexpect
+use mockmatch
+use mockreply
+
+fn get(path: Str) -> HmRequest
+    mockmatch.request("GET", path)
+
+fn field_of(e: HmExpectation, r: HmRequest) -> Str
+    match mockmatch.miss_of(e, 0, r)
+        None    => "none"
+        Some(m) => mockmatch.field_name(m.field)
+
+@test
+fn test_every_method_has_a_wire_spelling_and_a_way_back() [io]
+    let all = [HmGet, HmHead, HmPost, HmPut, HmPatch, HmDelete, HmOptions, HmAnyMethod]
+    for m in all
+        match mockexpect.method_named(mockexpect.method_name(m))
+            None    => test.assert(false)
+            Some(b) => test.assert(mockexpect.method_name(b) == mockexpect.method_name(m))
+
+@test
+fn test_a_method_other_than_the_expected_one_misses_and_any_method_does_not() [io]
+    let e = mockexpect.expect(HmPut, "/t")
+    test.assert(mockmatch.matches(e, mockmatch.request("PUT", "/t")))
+    test.assert(mockmatch.matches(e, mockmatch.request("PATCH", "/t")) == false)
+    test.assert(mockmatch.matches(mockexpect.expect(HmAnyMethod, "/t"),
+                                  mockmatch.request("PROPFIND", "/t")))
+
+@test
+fn test_a_literal_path_means_its_own_characters() [io]
+    let e = mockexpect.expect_exact(HmGet, "/a:b/*")
+    test.case("the path itself matches")
+    test.assert(mockmatch.matches(e, get("/a:b/*")))
+
+    test.case("a path the pattern syntax would have matched does not")
+    test.assert(mockmatch.matches(e, get("/a:b/x")) == false)
+    test.assert(mockmatch.matches(mockexpect.expect_exact(HmGet, "/:id"), get("/7")) == false)
+    test.assert(mockmatch.matches(mockexpect.expect_exact(HmGet, "/:id"), get("/:id")))
+
+    test.case("no parameter is bound")
+    test.assert(list.len(mockmatch.bindings(mockexpect.expect_exact(HmGet, "/:id"), get("/:id"))) == 0)
+
+    test.case("the root is a literal path too")
+    test.assert(mockmatch.matches(mockexpect.expect_exact(HmGet, "/"), get("/")))
+
+@test
+fn test_a_literal_path_that_is_not_a_path_matches_nothing() [io]
+    for bad in ["", "abc", "//a", "/a//b", "/a/"]
+        let e = mockexpect.expect_exact(HmAnyMethod, bad)
+        test.assert(mockexpect.matchable(e) == false)
+        test.assert(mockmatch.matches(e, get(bad)) == false)
+        test.assert(str.contains(mockexpect.describe(e), "invalid path"))
+
+@test
+fn test_a_pattern_that_does_not_parse_matches_nothing_and_says_so() [io]
+    let e = mockexpect.expect(HmGet, "/users/:")
+    test.assert(mockexpect.matchable(e) == false)
+    test.assert(mockexpect.matchable(mockexpect.expect(HmGet, "/users/:id")))
+    test.assert(mockexpect.matchable(mockexpect.expect(HmGet, "/")))
+    test.assert(mockmatch.matches(e, get("/users/")) == false)
+    test.assert(str.contains(mockexpect.describe(e), "invalid path pattern /users/:"))
+    test.assert(field_of(e, get("/users/7")) == "path")
+    test.assert(list.len(mockmatch.bindings(e, get("/users/7"))) == 0)
+
+@test
+fn test_the_policy_decides_about_a_trailing_slash_and_case() [io]
+    let plain = mockexpect.expect(HmGet, "/users")
+
+    test.case("the default policy treats /users/ as /users, as a web server does")
+    test.assert(mockmatch.matches(plain, get("/users/")))
+
+    test.case("the strict policy does not")
+    let strict = mockexpect.with_policy(plain, routepat.strict_policy())
+    test.assert(mockmatch.matches(strict, get("/users/")) == false)
+    test.assert(mockmatch.matches(strict, get("/users")))
+
+    test.case("a path is case sensitive unless the policy says otherwise")
+    test.assert(mockmatch.matches(plain, get("/Users")) == false)
+    let folded = RoutePolicy { trailing: RouteTrailingIgnore, case_rule: RouteCaseInsensitiveAscii,
+                               decode_params: false, merge_slashes: false }
+    test.assert(mockmatch.matches(mockexpect.with_policy(plain, folded), get("/USERS/")))
+
+    test.case("parameters bind from the spelling that matched")
+    let pe = mockexpect.expect(HmGet, "/users/:id")
+    match mockmatch.binding(mockmatch.bindings(pe, get("/users/7/")), "id")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "7")
+
+@test
+fn test_a_catch_all_binds_the_tail() [io]
+    let e = mockexpect.expect(HmGet, "/static/*rest")
+    match mockmatch.binding(mockmatch.bindings(e, get("/static/css/site.css")), "rest")
+        None    => test.assert(false)
+        Some(v) => test.assert(v == "css/site.css")
+
+@test
+fn test_query_rules_check_presence_value_and_optionality() [io]
+    let eq = mockexpect.with_query_value(mockexpect.expect(HmGet, "/s"), "q", "novo")
+    let base = get("/s")
+
+    test.case("a required parameter that is absent is a miss that says so")
+    match mockmatch.miss_of(eq, 3, base)
+        None    => test.assert(false)
+        Some(m) =>
+            test.assert(mockmatch.field_name(m.field) == "query q")
+            test.assert(m.got == "absent")
+            test.assert(m.expectation == 3)
+
+    test.case("a parameter with the wrong value is a miss with the value in it")
+    match mockmatch.miss_of(eq, 0, mockmatch.with_query(base, "q", "other"))
+        None    => test.assert(false)
+        Some(m) => test.assert(str.contains(m.got, "other"))
+
+    test.case("the right value matches, and extra parameters are ignored")
+    let ok = mockmatch.with_query(mockmatch.with_query(base, "trace", "1"), "q", "novo")
+    test.assert(mockmatch.matches(eq, ok))
+
+    test.case("an optional rule passes when the parameter is absent and fails when it is wrong")
+    let optional = HmExpectation { label: "", method: HmGet, path: eq.path, policy: eq.policy,
+        query: [HmParamRule { name: "q", value: matchtext.starts_with("n"), required: false }],
+        headers: [], body: None, times: mockexpect.any_times() }
+    test.assert(mockmatch.matches(optional, base))
+    test.assert(mockmatch.matches(optional, mockmatch.with_query(base, "q", "xyz")) == false)
+    test.assert(mockmatch.matches(optional, mockmatch.with_query(base, "q", "nx")))
+
+@test
+fn test_header_rules_check_presence_value_and_optionality() [io]
+    let required = mockexpect.with_header_value(mockexpect.expect(HmGet, "/t"), "Accept", "text/plain")
+    let optional = mockexpect.with_optional_header(mockexpect.expect(HmGet, "/t"), "X-Trace",
+                                                   matchtext.starts_with("id-"))
+
+    test.case("a required header that is absent")
+    match mockmatch.miss_of(required, 0, get("/t"))
+        None    => test.assert(false)
+        Some(m) =>
+            test.assert(mockmatch.field_name(m.field) == "header Accept")
+            test.assert(m.got == "absent")
+
+    test.case("an optional header that is absent passes, wrong fails, right passes")
+    test.assert(mockmatch.matches(optional, get("/t")))
+    test.assert(mockmatch.matches(optional, mockmatch.with_header(get("/t"), "x-trace", "zz")) == false)
+    test.assert(mockmatch.matches(optional, mockmatch.with_header(get("/t"), "X-TRACE", "id-1")))
+
+@test
+fn test_the_body_rule_names_the_body_in_a_miss() [io]
+    let e = mockexpect.with_body(mockexpect.expect(HmPost, "/t"), matchtext.contains_text("name"))
+    let r = mockmatch.with_body(mockmatch.request("POST", "/t"), "{}")
+    match mockmatch.miss_of(e, 0, r)
+        None    => test.assert(false)
+        Some(m) =>
+            test.assert(mockmatch.field_name(m.field) == "body")
+            test.assert(str.contains(m.wanted, "name"))
+    test.assert(mockmatch.miss_of(e, 0, mockmatch.with_body(r, "a name")) == None)
+
+@test
+fn test_a_json_body_rule_reports_what_arrived() [io]
+    let e = mockexpect.with_body_json(mockexpect.expect(HmPost, "/t"), "{\"a\":1}")
+    test.assert(mockmatch.matches(e, mockmatch.with_body(mockmatch.request("POST", "/t"), "{ \"a\" : 1 }")))
+    match mockmatch.miss_of(e, 0, mockmatch.with_body(mockmatch.request("POST", "/t"), "{\"a\":2}"))
+        None    => test.assert(false)
+        Some(m) =>
+            test.assert(str.contains(m.wanted, "JSON equal to"))
+            test.assert(str.contains(m.got, "was"))
+
+@test
+fn test_json_equality_follows_rfc_9535() [io]
+    test.case("numbers compare by value")
+    test.assert(mockmatch.json_equal("[1]", "[1.0]"))
+    test.case("array order is part of the document")
+    test.assert(mockmatch.json_equal("[1,2]", "[2,1]") == false)
+    test.case("nested members in another order")
+    test.assert(mockmatch.json_equal("{\"a\":{\"x\":1,\"y\":[true,null]},\"b\":\"s\"}",
+                                     "{\"b\":\"s\",\"a\":{\"y\":[true,null],\"x\":1}}"))
+    test.case("text that is not JSON compares as text on either side")
+    test.assert(mockmatch.json_equal("{", "{"))
+    test.assert(mockmatch.json_equal("{", "[]") == false)
+    test.assert(mockmatch.json_equal("[]", "{") == false)
+    test.assert(mockmatch.json_equal("1", "one") == false)
+
+@test
+fn test_request_targets_are_cut_the_way_a_client_sends_them() [io]
+    test.case("no query")
+    let a = mockmatch.request_target("GET", "/plain")
+    test.assert(a.path == "/plain")
+    test.assert(list.len(a.query) == 0)
+
+    test.case("a fragment is dropped")
+    test.assert(mockmatch.request_target("GET", "/p#frag").path == "/p")
+    test.assert(mockmatch.request_target("GET", "/p?x=1#frag").query[0].value == "1")
+
+    test.case("values are percent-decoded, and a missing value is empty")
+    let b = mockmatch.request_target("GET", "/s?q=a%20b&flag")
+    test.assert(b.query[0].value == "a b")
+    test.assert(b.query[1].name == "flag")
+    test.assert(b.query[1].value == "")
+
+@test
+fn test_a_request_prints_as_one_line() [io]
+    test.assert(mockmatch.request_line(get("/a")) == "GET /a")
+    let r = mockmatch.with_query(mockmatch.with_query(get("/a"), "q", "x y"), "n", "2")
+    test.assert(mockmatch.request_line(r) == "GET /a?q=x+y&n=2")
+
+@test
+fn test_the_decision_and_the_fields_have_names() [io]
+    let e = mockexpect.expect(HmGet, "/a")
+    test.assert(mockmatch.decision_name(mockmatch.decide([e], [], get("/a"))) == "serve")
+    test.assert(mockmatch.decision_name(mockmatch.decide([e], [], get("/b"))) == "unmatched")
+    let once = mockexpect.with_times(e, mockexpect.exactly(1))
+    test.assert(mockmatch.decision_name(mockmatch.decide([once], [1], get("/a"))) == "exhausted")
+    test.assert(mockmatch.field_name(HmBodyField) == "body")
+    test.assert(mockmatch.field_name(HmQueryField("q")) == "query q")
+    test.assert(mockmatch.field_name(HmHeaderField("X")) == "header X")
+    test.assert(mockmatch.field_name(HmPathField) == "path")
+
+@test
+fn test_an_exhausted_rule_hands_over_to_a_later_one_that_matches() [io]
+    // A list can answer a sequence of calls to one path with a sequence
+    // of replies.
+    let first = mockexpect.with_times(mockexpect.expect(HmGet, "/a"), mockexpect.exactly(1))
+    let second = mockexpect.expect(HmGet, "/a")
+
+    test.case("the first call goes to the first rule")
+    match mockmatch.decide([first, second], [0, 0], get("/a"))
+        HmServe(i, _) => test.assert(i == 0)
+        _             => test.assert(false)
+
+    test.case("the second call goes to the second rule")
+    match mockmatch.decide([first, second], [1, 0], get("/a"))
+        HmServe(i, _) => test.assert(i == 1)
+        _             => test.assert(false)
+
+    test.case("and a count list shorter than the rule list counts the rest as zero")
+    match mockmatch.decide([first, second], [], get("/a"))
+        HmServe(i, _) => test.assert(i == 0)
+        _             => test.assert(false)
+
+    test.case("when every matching rule is spent, the first one is named, with its label")
+    let spent = mockexpect.labelled(mockexpect.with_times(mockexpect.expect(HmGet, "/a"),
+                                    mockexpect.at_most(2)),
+                                    "the capped one")
+    match mockmatch.decide([spent, first], [2, 1], get("/a"))
+        HmExhausted(i, label, limit) =>
+            test.assert(i == 0)
+            test.assert(label == "the capped one")
+            test.assert(limit == 2)
+        _                            => test.assert(false)
+
+@test
+fn test_an_unmatched_report_has_a_line_per_expectation() [io]
+    let a = mockexpect.labelled(mockexpect.expect(HmGet, "/a"), "first")
+    let b = mockexpect.with_header_value(mockexpect.expect(HmGet, "/b"), "X-K", "v")
+    let r = mockmatch.with_query(get("/b"), "q", "1")
+    match mockmatch.decide([a, b], [], r)
+        HmUnmatched(misses) =>
+            let report = mockmatch.unmatched_report(r, misses)
+            let lines = str.split(report, "\n")
+            test.assert(list.len(lines) == 3)
+            test.assert(lines[0] == "no expectation matched GET /b?q=1")
+            test.assert(str.contains(lines[1], "#0 first: path wanted /a, was /b"))
+            test.assert(str.contains(lines[2], "header X-K wanted"))
+            test.assert(str.contains(lines[2], "absent"))
+        _                   => test.assert(false)
+
+@test
+fn test_a_miss_is_one_line_even_when_the_matcher_describes_itself_on_several() [io]
+    let m = HmMiss { expectation: 1, label: "x", field: HmBodyField,
+                     wanted: "line one\nline two", got: "a\r\nb" }
+    let line = mockmatch.miss_line(m)
+    test.assert(str.contains(line, "\n") == false)
+    test.assert(str.contains(line, "\r") == false)
+    test.assert(str.contains(line, "line one line two"))
+
+@test
+fn test_a_reply_renders_names_the_binding_set_does_not_have() [io]
+    let r = mockreply.render(mockreply.text(200, "a \${x} b \${y} c \${x"),
+                             [HmBinding { name: "x", value: "1" }])
+    test.assert(r.body == "a 1 b \${y} c \${x")
+    test.assert(r.templated == false)
+    test.assert(mockreply.render(r, [HmBinding { name: "y", value: "2" }]).body == r.body)
+    test.assert(mockreply.template_names(mockreply.body_literal(mockreply.text(200, "\${x}"))) == [])
+    let names = mockreply.template_names(
+        mockreply.with_header(mockreply.text(200, "\${a}"), "L", "/\${b}/\${a}"))
+    test.assert(names == ["a", "b", "a"])
+    test.assert(mockreply.header(mockreply.status(200), "Missing") == None)
+    test.assert(mockreply.exhausted("lbl", 3).status == 409)
+    test.assert(str.contains(mockreply.exhausted("lbl", 3).body, "lbl"))
+
+@test
+fn test_a_json_body_rule_compares_text_that_is_not_json_as_text() [io]
+    let e = mockexpect.with_body_json(mockexpect.expect(HmPost, "/t"), "not json")
+    let post = mockmatch.request("POST", "/t")
+    test.assert(mockmatch.matches(e, mockmatch.with_body(post, "not json")))
+    test.assert(mockmatch.matches(e, mockmatch.with_body(post, "{}")) == false)
+    let doc = mockexpect.with_body_json(mockexpect.expect(HmPost, "/t"), "{}")
+    test.assert(mockmatch.matches(doc, mockmatch.with_body(post, "not json")) == false)

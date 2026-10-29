@@ -1,7 +1,5 @@
 // mockverify_tests.nv — the verdict, decided by a pure function.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
 //
 // MOST OF THIS FILE NEVER STARTS A SERVER.  `verify_counts` takes the
 // rules, the call counts and the recording as arguments and answers a

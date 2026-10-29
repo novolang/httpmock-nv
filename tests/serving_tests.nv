@@ -1,0 +1,354 @@
+// serving_tests.nv — a running mock, driven by the standard library's own
+// HTTP client.
+//
+// The client is the oracle for what the server puts on the wire: it
+// parses the status line, the headers and the body that `dispatch` and
+// `to_response` produced, and it is code the package does not own.  Each
+// test starts one mock and stops it, because the standard library runs
+// one server per process.
+
+use std.test
+use std.str
+use std.list
+use std.http
+use matchtext
+use mockexpect
+use mockmatch
+use mockreply
+use mockserver
+use mockverify
+
+fn rules() -> [HmRule]
+    [mockserver.rule(
+        mockexpect.with_header(mockexpect.expect(HmGet, "/users/:id"), "Authorization",
+                               matchtext.starts_with("Bearer ")),
+        mockreply.with_header(mockreply.json(200, "{\"id\":\${id}}"), "X-Served", "yes")),
+     mockserver.rule(
+        mockexpect.with_body_json(mockexpect.expect(HmPost, "/echo"), "{\"a\":1,\"b\":2}"),
+        mockreply.status(201)),
+     mockserver.rule(
+        mockexpect.with_times(mockexpect.labelled(mockexpect.expect(HmGet, "/once"), "the one call"),
+                              mockexpect.exactly(1)),
+        mockreply.text(200, "first")),
+     mockserver.rule(mockexpect.expect(HmGet, "/slow"),
+                     mockreply.with_delay(mockreply.text(200, "late"), 60)),
+     mockserver.rule(mockexpect.expect(HmGet, "/go"), mockreply.redirect(302, "/elsewhere")),
+     mockserver.rule(mockexpect.expect(HmGet, "/empty"), mockreply.status(204)),
+     mockserver.rule(mockexpect.expect(HmGet, "/raw"), mockreply.body(200, "", "raw bytes")),
+     mockserver.rule(mockexpect.with_query_value(mockexpect.expect(HmAnyMethod, "/search"), "q", "novo"),
+                     mockreply.text(200, "found"))]
+
+fn client(m: HmMock) -> HttpClient
+    HttpClient.new(mockserver.base_url(m)).with_redirects(0).with_timeout(5000)
+
+fn status_of(r: Result<HttpReply, HttpError>) -> Int
+    match r
+        Ok(reply) => reply.status
+        Err(_)    => 0 - 1
+
+fn text_of(r: Result<HttpReply, HttpError>) -> Str
+    match r
+        Ok(reply) => http.client.text(reply)
+        Err(_)    => "<error>"
+
+@test
+fn test_a_matched_request_gets_its_reply_with_the_binding_filled_in() [io, fs, net, time, mutate, async]
+    match mockserver.start(rules())
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let c = client(m).with_header("Authorization", "Bearer t0ken")
+
+            test.case("status, body and headers come back")
+            match c.get("/users/42")
+                Err(_)    => test.assert(false)
+                Ok(reply) =>
+                    test.assert(reply.status == 200)
+                    test.assert(http.client.text(reply) == "{\"id\":42}")
+                    test.assert(http.client.header_or(reply, "content-type", "") ==
+                                "application/json; charset=utf-8")
+                    test.assert(http.client.header_or(reply, "X-Served", "") == "yes")
+
+            test.case("a request without the header is not served by that rule")
+            test.assert(status_of(client(m).get("/users/42")) == 404)
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_a_body_rule_and_a_status_only_reply() [io, fs, net, time, mutate, async]
+    match mockserver.start(rules())
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let c = client(m)
+            test.case("a JSON body in another member order is the same document")
+            test.assert(status_of(c.post("/echo", "{\"b\": 2, \"a\": 1}")) == 201)
+
+            test.case("a different document is not")
+            test.assert(status_of(c.post("/echo", "{\"a\":1}")) == 404)
+
+            test.case("a reply with no body and no content type is empty")
+            match c.get("/empty")
+                Err(_)    => test.assert(false)
+                Ok(reply) =>
+                    test.assert(reply.status == 204)
+                    test.assert(http.client.text(reply) == "")
+
+            test.case("a body with no content type is sent as bytes")
+            match c.get("/raw")
+                Err(_)    => test.assert(false)
+                Ok(reply) =>
+                    test.assert(http.client.text(reply) == "raw bytes")
+                    test.assert(http.client.header_or(reply, "Content-Type", "") ==
+                                "application/octet-stream")
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_a_redirect_a_delay_and_a_query_rule() [io, fs, net, time, mutate, async]
+    match mockserver.start(rules())
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let c = client(m)
+            test.case("a redirect carries its location and is not followed")
+            match c.get("/go")
+                Err(_)    => test.assert(false)
+                Ok(reply) =>
+                    test.assert(reply.status == 302)
+                    test.assert(http.client.header_or(reply, "Location", "") == "/elsewhere")
+
+            test.case("a delayed reply still arrives")
+            test.assert(text_of(c.get("/slow")) == "late")
+
+            test.case("a query rule serves any method")
+            test.assert(text_of(c.get("/search?q=novo&trace=1")) == "found")
+            test.assert(status_of(c.get("/search?q=other")) == 404)
+            test.assert(status_of(c.delete("/search?q=novo")) == 200)
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_everything_is_recorded_and_the_verdict_names_what_went_wrong() [io, fs, net, time, mutate, async]
+    match mockserver.start(rules())
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let c = client(m)
+            test.assert(text_of(c.get("/once")) == "first")
+            test.assert(status_of(c.get("/once")) == 409)
+            test.assert(status_of(c.get("/telemetry")) == 404)
+
+            test.case("all three requests are recorded, oldest first")
+            let all = mockverify.recorded(m)
+            test.assert(list.len(all) == 3)
+            test.assert(all[0].sequence == 0)
+            test.assert(all[0].request.path == "/once")
+            test.assert(all[0].served_by == 2)
+            test.assert(all[0].status == 200)
+            test.assert(all[1].status == 409)
+            test.assert(all[2].served_by == 0 - 1)
+
+            test.case("the last request is the telemetry call")
+            match mockverify.last_request(m)
+                None      => test.assert(false)
+                Some(rec) => test.assert(rec.request.path == "/telemetry")
+
+            test.case("a rule's own requests, and the counts")
+            test.assert(list.len(mockverify.served_by(m, 2)) == 1)
+            test.assert(mockverify.call_counts(m)[2] == 1)
+            test.assert(mockverify.request_count(m) == 3)
+
+            test.case("the unmatched request has a miss for every rule")
+            let un = mockverify.unexpected(m)
+            test.assert(list.len(un) == 1)
+            test.assert(list.len(un[0].misses) == list.len(rules()))
+
+            test.case("the verdict has the unexpected request and the over-served one")
+            let v = mockverify.verify(m, rules())
+            test.assert(mockverify.satisfied(v) == false)
+            test.assert(list.len(v.unexpected) == 1)
+            test.assert(list.len(v.over_served) == 1)
+            let text = mockverify.report(v)
+            test.assert(str.contains(text, "/telemetry"))
+            test.assert(str.contains(text, "past an expectation's limit"))
+
+            test.case("the transcript lists them")
+            test.assert(list.len(str.split(mockverify.transcript(mockverify.recorded(m)), "\n")) == 3)
+
+            test.case("clearing forgets the recording and the counts, and keeps the rules")
+            test.assert(mockverify.clear(m) == None)
+            test.assert(mockverify.request_count(m) == 0)
+            test.assert(mockverify.call_counts(m)[2] == 0)
+            test.assert(text_of(c.get("/once")) == "first")
+
+            let _ = mockserver.stop(m)
+
+@test
+fn test_the_two_assertions_pass_when_the_mock_saw_what_was_asked() [io, fs, net, time, mutate, async]
+    let wanted_rules = [mockserver.rule(
+        mockexpect.with_times(mockexpect.expect(HmGet, "/ping"), mockexpect.exactly(2)),
+        mockreply.text(200, "pong"))]
+    match mockserver.start(wanted_rules)
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let c = client(m).with_header("X-Trace", "abc")
+            test.assert(text_of(c.get("/ping?a=1")) == "pong")
+            test.assert(text_of(c.get("/ping")) == "pong")
+
+            test.case("verified, and the requests in order")
+            mockverify.assert_verified(m, wanted_rules)
+            mockverify.assert_requests(m, [
+                mockmatch.with_header(mockmatch.with_query(mockmatch.request("GET", "/ping"), "a", "1"),
+                                      "x-trace", "abc"),
+                mockmatch.request("GET", "/ping")])
+
+            let _ = mockserver.stop(m)
+            test.case("the recording is still readable after the stop")
+            test.assert(mockverify.request_count(m) == 2)
+
+@test
+fn test_a_stopped_mock_refuses_clear_and_the_message_names_the_reason() [io, fs, net, time, mutate, async]
+    match mockserver.start([])
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let _ = mockserver.stop(m)
+            match mockverify.clear(m)
+                None    => test.assert(false)
+                Some(e) => test.assert(str.contains(e.message(), "no mock is running"))
+
+@test
+fn test_a_bad_pattern_and_a_second_mock_say_why() [io, fs, net, time, mutate, async]
+    test.case("the bad pattern is named by index and text")
+    let bad = [mockserver.rule(mockexpect.expect(HmGet, "/ok"), mockreply.status(200)),
+               mockserver.rule(mockexpect.expect(HmGet, "/users/:"), mockreply.status(200))]
+    match mockserver.start(bad)
+        Ok(m)  =>
+            let _ = mockserver.stop(m)
+            test.assert(false)
+        Err(e) =>
+            test.assert(str.contains(e.message(), "rule 1"))
+            test.assert(str.contains(e.message(), "/users/:"))
+
+    test.case("the refusal of a second mock names the first one's port")
+    match mockserver.start([])
+        Err(_)    => test.assert(false)
+        Ok(first) =>
+            match mockserver.start([])
+                Ok(_)  => test.assert(false)
+                Err(e) =>
+                    test.assert(str.contains(e.message(), "${first.port}"))
+                    test.assert(str.contains(e.message(), "one server per process"))
+            let _ = mockserver.stop(first)
+
+    test.case("every refusal has a sentence")
+    match mockserver.start([])
+        Err(_)    => test.assert(false)
+        Ok(first) =>
+            let _ = mockserver.stop(first)
+            test.assert(str.len(HmBindFailed("denied").message()) > 0)
+            test.assert(str.contains(HmStopFailed("late").message(), "late"))
+            test.assert(str.contains(HmNotRunning.message(), "no mock"))
+
+@test
+fn test_the_unmatched_reply_carries_the_report() [io, fs, net, time, mutate, async]
+    match mockserver.start(rules())
+        Err(e) => test.assert(str.len(e.message()) == 0)
+        Ok(m)  =>
+            let text = text_of(client(m).get("/nowhere"))
+            test.assert(str.contains(text, "no expectation matched GET /nowhere"))
+            test.assert(str.contains(text, "path wanted"))
+            let _ = mockserver.stop(m)
+
+@test
+fn test_the_response_of_a_reply_with_headers_and_a_type() [io]
+    test.case("every header but the content type is added, the type is the body's")
+    let r = mockreply.with_header(mockreply.with_header(mockreply.json(200, "{}"), "X-A", "1"),
+                                  "Content-Type", "ignored")
+    let resp = mockserver.to_response(r)
+    test.assert(http.server.status(resp) == 200)
+    var names = 0
+    for h in resp.headers
+        if str.lower(h.name) == "x-a"
+            names = names + 1
+    test.assert(names == 1)
+
+fn never(m: HmMock) -> Int
+    0
+
+@test
+fn test_start_failures_and_the_callback_form() [io, fs, net, time, mutate, async]
+    test.case("an address that is not one cannot be bound")
+    match mockserver.start_on("not-an-address", 0, [])
+        Ok(m)  =>
+            let _ = mockserver.stop(m)
+            test.assert(false)
+        Err(e) => test.assert(str.contains(e.message(), "could not bind"))
+
+    test.case("an empty host binds every interface and the base url still names loopback")
+    match mockserver.start_on("", 0, [])
+        Err(_) => test.assert(false)
+        Ok(m)  =>
+            test.assert(str.starts_with(mockserver.base_url(m), "http://127.0.0.1:"))
+
+            test.case("with_mock does not start a second mock")
+            match mockserver.with_mock([], never)
+                Ok(_)  => test.assert(false)
+                Err(e) => test.assert(str.contains(e.message(), "already running"))
+            let _ = mockserver.stop(m)
+
+@test
+fn test_a_verdict_from_counts_shorter_than_the_rules() [io]
+    let r = mockserver.rule(mockexpect.expect(HmGet, "/a"), mockreply.status(200))
+    let v = mockverify.verify_counts([mockserver.rule(
+        mockexpect.with_times(mockexpect.expect(HmGet, "/a"), mockexpect.at_least(1)),
+        mockreply.status(200))],
+        [], [])
+    test.assert(mockverify.satisfied(v) == false)
+    test.assert(v.unsatisfied[0].calls == 0)
+    test.assert(mockverify.satisfied(mockverify.verify_counts([r], [], [])))
+
+@test
+fn test_a_call_constraint_is_said_in_words() [io]
+    let at_least = HmUnsatisfied { rule: 0, label: "a", wanted: mockexpect.at_least(2), calls: 1 }
+    test.assert(str.contains(mockverify.unsatisfied_line(at_least), "expected at least 2 call(s), was called 1 time(s)"))
+    let at_most = HmUnsatisfied { rule: 0, label: "a", wanted: mockexpect.at_most(3), calls: 4 }
+    test.assert(str.contains(mockverify.unsatisfied_line(at_most), "expected at most 3 call(s)"))
+    let exactly = HmUnsatisfied { rule: 0, label: "a", wanted: mockexpect.exactly(1), calls: 0 }
+    test.assert(str.contains(mockverify.unsatisfied_line(exactly), "expected exactly 1 call(s)"))
+    let between = HmUnsatisfied { rule: 0, label: "a",
+                                  wanted: HmTimes { at_least: 2, at_most: 5 }, calls: 0 }
+    test.assert(str.contains(mockverify.unsatisfied_line(between), "expected between 2 and 5 call(s)"))
+
+fn seen_at(seq: Int, request: HmRequest) -> HmRecorded
+    HmRecorded { sequence: seq, request: request, served_by: 0, status: 200, misses: [] }
+
+@test
+fn test_the_recording_is_compared_with_the_wanted_requests() [io]
+    let ping = mockmatch.request("GET", "/ping")
+    let seen = [seen_at(0, mockmatch.with_body(mockmatch.with_query(
+                    mockmatch.with_header(ping, "X-A", "1"), "q", "1"),
+                    "body"))]
+
+    test.case("the same requests in the same order")
+    test.assert(mockverify.first_difference(seen, [ping]) == None)
+
+    test.case("what the wanted request names must be there")
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_header(ping, "x-a", "1")]) == None)
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_body(ping, "body")]) == None)
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_query(ping, "q", "1")]) == None)
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_header(ping, "X-A", "2")]) != None)
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_header(ping, "X-B", "1")]) != None)
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_query(ping, "q", "2")]) != None)
+    test.assert(mockverify.first_difference(seen, [mockmatch.with_body(ping, "other")]) != None)
+
+    test.case("another method or path")
+    match mockverify.first_difference(seen, [mockmatch.request("POST", "/ping")])
+        None      => test.assert(false)
+        Some(why) =>
+            test.assert(str.contains(why, "request #0: expected POST /ping"))
+            test.assert(str.contains(why, "the mock saw GET /ping?q=1"))
+    test.assert(mockverify.first_difference(seen, [mockmatch.request("GET", "/pong")]) != None)
+
+    test.case("another number of requests prints the transcript")
+    match mockverify.first_difference(seen, [])
+        None      => test.assert(false)
+        Some(why) =>
+            test.assert(str.contains(why, "expected 0 request(s), the mock saw 1"))
+            test.assert(str.contains(why, "#0 GET /ping?q=1 -> 200 (rule 0)"))

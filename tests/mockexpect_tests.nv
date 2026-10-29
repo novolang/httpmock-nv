@@ -1,9 +1,6 @@
 // mockexpect_tests.nv — an expectation is data, and this file proves it
 // by never starting anything.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: httpmock-nv.<module>.<fn>`.
-// That is the expected result until the bodies land.
 //
 // NOT ONE ASSERTION IN THIS FILE NEEDS A SOCKET.  That is the whole
 // argument for building an expectation rather than registering one: the
