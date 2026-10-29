@@ -5,6 +5,51 @@ All notable changes to httpmock-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-10-29
+
+The first implementation of the interface published as 0.0.2.
+
+### Added
+
+- Every function of the five modules, and a sixth, `mockstate`, which
+  holds the running mock's rules, call counts and recording in
+  module-level variables because the standard library's handler cannot
+  capture anything.  A program calls `mockserver` and `mockverify`.
+- `mockexpect.matchable`, which says whether an expectation's path
+  pattern parsed.
+- `mockverify.first_difference`, the pure comparison of a recording with
+  a list of wanted requests that `assert_requests` reports from.
+- `HmStopFailed`, a variant of `HmError` for a listener that cannot be
+  closed.
+- `tests/matching_tests.nv` and `tests/serving_tests.nv`, and
+  `tests/coverage.sh`.
+
+### Changed
+
+- `router-nv` is `^0.1.0` and `matchers-nv` is `^0.1.0`; the version
+  0.0.2 asked for `^0.0.1` of both, which were interfaces.
+- `mockserver.with_mock` stops the server when the body returns.  The
+  interface said it also stopped it when the body panicked, but a panic
+  ends the process and the listener with it.
+- An expectation that has served as many requests as it allows is
+  skipped when a later expectation matches.  The answer is `HmExhausted`
+  only when every expectation that matches is spent.
+- A request that `web_policy` would answer with a redirect, such as
+  `/users/` for `/users`, matches the expectation.
+- A request that matched an exhausted expectation is recorded with
+  `served_by` of `0 - 1` and status `409`, and appears in
+  `HmVerdict.over_served` and not in `HmVerdict.unexpected`.
+- The replies the mock generates itself, `mockreply.unmatched` and
+  `mockreply.exhausted`, are not templated.
+- `mockmatch.request_line` writes a query with `+` for a space.
+
+### Known defects in the toolchain
+
+- `mockreply.text` and `mockreply.json` call a private function instead
+  of `body`, because a call to a function from a function with a
+  parameter of the same name crashes when reached through the module
+  (bug `a-parameter-named-like-a-function-of-its-module-makes-the-call-through-the-module-segfault`).
+
 ## 0.0.2 — 2026-09-16
 
 README rewritten to the package README style guide

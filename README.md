@@ -12,12 +12,6 @@ matchers and the words a failure is written in, and
 [router-nv](https://novo-lang.org/packages/router-nv) for the path
 patterns.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is declared
-with its full signature, but every body is a `todo()` that panics when
-called. The package is published so its design can be reviewed and
-depended on before it is implemented. Version 0.1.0 will be the first
-working release.
-
 ## What it is
 
 An **expectation** is a value that says what a request has to look like:
@@ -91,26 +85,22 @@ fn test_the_client_authenticates() [io, fs, net, time, mutate, async]
                    mockreply.json(200, "{\"id\":\${id}}"))]
 
     // The server is started, the body runs, and the server is stopped
-    // whether the body returned or panicked.
+    // when the body returns.
     match mockserver.with_mock(rules, the_client_sends_its_token)
         Err(e) => test.fail(e.message())
         Ok(ok) => test.assert(ok)
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: httpmock-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
-
 ## What the package contains
 
 | Module | Contents |
 | --- | --- |
-| `mockexpect` | The expectation: the methods, the times-called constraint, the builders that add a header, a query parameter or a body rule, and the one-line description every failure is written from. |
+| `mockexpect` | The expectation: the methods, the times-called constraint, the builders that add a header, a query parameter or a body rule, and the one-line description every failure is written from, and `matchable`, which says whether the path pattern parsed. |
 | `mockmatch` | The decision: the request as this package sees it, the three answers, the miss that names a field, the builders a test writes a request with in three lines, and the report the two failure paths share. |
 | `mockreply` | The reply: the five constructors, the header and delay builders, the `${name}` substitution and the names a template uses, and the two replies the mock generates itself. |
 | `mockserver` | The socket: a rule, a running mock, the refusals, starting and stopping, the scoped form, and the three functions that name the seam with `std.http`. |
-| `mockverify` | What the mock saw: one record per request with the rule that served it, the readers over the recording, the verdict and the rule that produces it, the two assertions, and the transcript. |
+| `mockstate` | The rules, call counts and recording of the running mock. `mockserver` writes them and `mockverify` reads them; a program has no reason to call it. |
+| `mockverify` | What the mock saw: one record per request with the rule that served it, the readers over the recording, the verdict and the rule that produces it, the two assertions, the transcript, and `first_difference`, which says how a recording differs from a list of wanted requests. |
 
 ## How to choose an entry point
 
@@ -150,7 +140,11 @@ reimplementing it.
    `HmExhausted(index, label, limit)`. Passing an empty list for `calls`
    means nothing has been served yet.
 2. **First match wins, in list order.** Put the more specific
-   expectation first.
+   expectation first. An expectation that has served as many requests as
+   it allows is skipped when a later expectation matches, so a list can
+   answer a sequence of calls to one path with a sequence of replies.
+   The answer is `HmExhausted` only when every expectation that matches
+   is spent.
 3. **A miss names one field, and the fields are checked in a fixed
    order**: method, path, query, headers, body. Only the first miss per
    expectation is reported, so a report has one line per expectation
@@ -166,9 +160,8 @@ reimplementing it.
 
    ```
    no expectation matched POST /users
-     #0 the token endpoint — method: wanted GET, was POST
-     #1 create a user      — header Authorization: wanted a string
-                             starting with "Bearer ", was "Basic dXNlcg=="
+     #0 the token endpoint: method wanted GET, was POST
+     #1 create a user: header Authorization wanted a string starting with "Bearer ", was "Basic dXNlcg=="
    ```
 
 6. **Header names are compared case-insensitively.** That is
@@ -216,7 +209,8 @@ reimplementing it.
     `mockserver.stop` drains what is in flight, closes the listener and
     answers. `mockserver.stop_within` takes the grace period;
     `mockserver.default_grace_ms` is 500. `mockserver.with_mock` stops
-    the server whether the body returned or panicked.
+    the server when the body returns. A panic ends the process and the
+    listener with it. The recording stays readable after the stop.
 15. **One mock runs per process.** `std.http`'s asynchronous server
     keeps its connection queue, its shutdown flag, its live-worker count
     and its handler in module-level state, and its own documentation
@@ -297,67 +291,26 @@ reimplementing it.
 ## Tests
 
 ```bash
-novo test --isolate tests/mockmatch_tests.nv   # 12 tests: the decision
-novo test --isolate tests/mockreply_tests.nv   # 12 tests: the replies and the substitution
-novo test --isolate tests/mockserver_tests.nv  # 12 tests: the socket, the refusals and the seam
-novo test --isolate tests/mockexpect_tests.nv  # 10 tests: the expectation and the times constraint
-novo test --isolate tests/mockverify_tests.nv  # 11 tests: the recording and the verdict
+novo test --isolate tests/matching_tests.nv    # the corners of the decision
+bash tests/coverage.sh                         # line coverage of src/ over all suites
 ```
 
-The behaviour asserted is httpmock's, for the expectation builder, the
-times-called constraints and the verification, and responses', for the
-list of recorded calls. RFC 7230 section 3.2 is the authority for the
-case folding of header names.
-
-Most of the suite needs no server. `mockmatch_tests.nv` builds requests
-with `mockmatch.request` and asserts the decision: which expectation
-wins when two could, that a miss names the field and the first field
-only, that a header name matches in any case, that an unnamed query
-parameter is ignored, and that being out of calls is a different answer
-from not matching. `mockverify_tests.nv` does the same for
-`verify_counts`, which takes the recording as an argument.
-`mockserver_tests.nv` holds the part that genuinely needs a socket: that
-the port is the kernel's and is reported, that a second `start` is
-refused, that stopping twice is not a failure, that a rule whose pattern
-does not parse is refused at `start`, and that the two conversions across
-the `std.http` seam declare no effects.
-
-The tests compile today and fail at run, each on the
-`not implemented: httpmock-nv.<module>.<fn>` panic that is its body.
-That is the expected state of an interface release. They turn green one
-at a time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
+| Suite | What it asserts |
 | --- | --- |
-| `mockexpect.expect`, `.expect_exact`, `.path_ok`, `.labelled`, `.with_policy` | no |
-| `mockexpect.with_header`, `.with_optional_header`, `.with_header_value` | no |
-| `mockexpect.with_query`, `.with_query_value` | no |
-| `mockexpect.with_body`, `.with_body_text`, `.with_body_json` | no |
-| `mockexpect.any_times`, `.exactly`, `.at_least`, `.at_most`, `.with_times` | no |
-| `mockexpect.times_satisfied`, `.times_exhausted` | no |
-| `mockexpect.method_name`, `.method_named`, `.describe` | no |
-| `mockmatch.request`, `.request_target`, `.with_query`, `.with_header`, `.with_body` | no |
-| `mockmatch.decide`, `.matches`, `.miss_of`, `.bindings`, `.binding`, `.header` | no |
-| `mockmatch.decision_name`, `.field_name`, `.miss_line`, `.request_line` | no |
-| `mockmatch.unmatched_report`, `.describe_wanted`, `.describe_got`, `.json_equal` | no |
-| `mockreply.status`, `.text`, `.json`, `.body`, `.redirect` | no |
-| `mockreply.with_header`, `.with_delay`, `.body_literal`, `.header` | no |
-| `mockreply.render`, `.template_names`, `.reply_line` | no |
-| `mockreply.unmatched`, `.exhausted` | no |
-| `mockserver.rule`, `.start`, `.start_on`, `.with_mock`, `.is_running` | no |
-| `mockserver.base_url`, `.url_for`, `.stop`, `.stop_within` | no |
-| `mockserver.dispatch`, `.to_request`, `.to_response` | no |
-| `mockserver.workers`, `.default_grace_ms`, `mockserver.HmError.message` | no |
-| `mockverify.recorded`, `.request_count`, `.last_request`, `.served_by` | no |
-| `mockverify.call_counts`, `.unexpected`, `.clear` | no |
-| `mockverify.verify`, `.verify_counts`, `.satisfied` | no |
-| `mockverify.report`, `.unsatisfied_line`, `.transcript` | no |
-| `mockverify.assert_verified`, `.assert_requests` | no |
+| `mockexpect_tests.nv` | The expectation builders and the times-called constraints. |
+| `mockmatch_tests.nv`, `matching_tests.nv` | The decision: which expectation wins, that a miss names one field, header case folding, ignored query parameters, path policies, literal paths, JSON bodies, and request targets. |
+| `mockreply_tests.nv` | The replies and the `${name}` substitution. |
+| `mockstate_tests.nv` | The held rules, the counts and the recording. |
+| `mockverify_tests.nv` | The verdict and its report, from counts and recordings given as arguments. |
+| `mockserver_tests.nv`, `serving_tests.nv` | A running mock, driven by the standard library's own HTTP client: the kernel's port, the refusals, replies on the wire, redirects, delays, the recording and the assertions. |
+
+The standard library's client is the oracle for what the server puts on
+the wire. It parses the status line, headers and body that `dispatch`
+and `to_response` produce, and it is code this package does not own.
+RFC 7230 section 3.2 is the authority for the case folding of header
+names, and RFC 9535 section 2.3.5.2.2 for JSON equality.
 
 ## Licence
 
 Apache-2.0. See `LICENSE`.
 
-<!-- docs/writing-a-readme.md is the style guide for this page. -->
