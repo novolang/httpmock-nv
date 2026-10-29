@@ -1,15 +1,11 @@
 [package]
 name        = "httpmock-nv"
-version     = "0.0.2"
-description = "A stub HTTP server for tests: expectations are values, the request-to-response DECISION is a pure function that reports which expectation missed and on which field, the mock records every request whether or not it matched, and verification reads like a matchers-nv failure.  The server binds port 0 and reports what the kernel gave it, so nothing is hard-coded and nothing races.  Interface only — every body is a todo()."
+version     = "0.1.0"
+description = "A stub HTTP server for tests: expectations are values, the request-to-response DECISION is a pure function that reports which expectation missed and on which field, the mock records every request whether or not it matched, and verification reads like a matchers-nv failure.  The server binds port 0 and reports what the kernel gave it, so nothing is hard-coded and nothing races."
 license     = "Apache-2.0"
 
-# An INTERFACE release: every `pub fn` body is a `todo()`, so the
-# signatures and the effect rows are published and nothing is
-# implemented.  `novo pkg publish` recognises the shape and requires
-# both the draft stability and the 0.0.x version; the first
-# implementation is the 0.1.0 published over it.
-stability   = "draft"
+# No program outside this repository has used the package yet.
+stability   = "experimental"
 
 # `host`, and the row on `mockserver.start` is wider than the plan
 # guessed — `[net]` alone is not what a server costs.
@@ -49,7 +45,7 @@ novo        = ">= 0.8.9"
 # capture — so `HmExpectation` holds a `RoutePattern` and this package
 # writes no path matching of its own.  `core`, which the layer order
 # allows.
-router-nv = "^0.0.1"
+router-nv = "^0.1.0"
 
 # The value matchers, and the failure text.
 #
@@ -60,4 +56,4 @@ router-nv = "^0.0.1"
 # turn "expectation 1 did not match" into "expected a header
 # Authorization starting with Bearer, was `Basic dXNlcg==`" — which is
 # the whole difference between a usable mock and a 404.  `core`.
-matchers-nv = "^0.0.1"
+matchers-nv = "^0.1.0"

@@ -1,44 +1,39 @@
 // mockmatch.nv — the decision, and it is a pure function.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// `decide` takes a list of expectations, the number of calls each has
+// already served, and one request, and answers which expectation serves
+// it.  When none does, the answer says which field of which expectation
+// missed.  No function in this module performs an effect, so the
+// matching is tested with no port, no process and no teardown.
 //
-// THE LOAD-BEARING INTERFACE IS `HmDecision`, AND `decide` IS `[]`.
-// Given a list of expectations, the calls each has already served, and
-// one request, this module answers which expectation serves it — or,
-// when none does, WHICH FIELD OF WHICH EXPECTATION MISSED.
+// `HmUnmatched` carries one `HmMiss` per expectation: the index, the
+// field that differed, what was wanted in matchers-nv's `describe` and
+// what arrived in its `describe_mismatch`.  A report reads:
 //
-// Two things fall out, and both are the reason for the shape.
+//     no expectation matched GET /users/7
+//       #0 the token endpoint: header Authorization wanted a string
+//          starting with "Bearer ", was "Basic dXNlcg=="
 //
-// FIRST, THE MATCHING IS TESTABLE WITHOUT A SOCKET.  A mock server's
-// bugs are almost never in the socket; they are in "why did my
-// expectation not match" — a header compared case-sensitively, a path
-// that needed its trailing slash, a body whose JSON members came out in
-// another order.  Every one of those is a case in this package's own
-// suite, written as a value in and a value out, with no port, no
-// process and no teardown.
+// The fields of an expectation are checked in a fixed order: method,
+// path, query, headers, body.  The first miss of an expectation is the
+// one reported.  The order is cheapest first and is the order a person
+// reads a request in, and an expectation that differs in four fields is
+// almost always wrong in the first.
 //
-// SECOND, THE FAILURE CAN NAME THE FIELD.  Every other mock library
-// answers a bare 404 and leaves the reader to guess.  `HmUnmatched`
-// carries one `HmMiss` per expectation — the expectation's index, the
-// field that differed, what was wanted (matchers-nv's `describe`) and
-// what arrived (`describe_mismatch`) — so the failure reads:
+// An expectation that has served as many requests as it allows is skipped
+// when a later expectation matches, so a list can answer a sequence of
+// calls to one path with a sequence of replies.  When every expectation
+// that matches is exhausted, the answer is `HmExhausted` for the first.
 //
-//     no expectation matched POST /users
-//       #0 the token endpoint — method: wanted GET, was POST
-//       #1 create a user      — header Authorization: wanted a string
-//                               starting with "Bearer ", was "Basic dXNlcg=="
-//
-// which is the difference between a usable mock and one people delete.
-//
-// THE FIELDS ARE CHECKED IN A FIXED ORDER — method, path, query,
-// headers, body — and the FIRST miss per expectation is the one
-// reported.  In that order because it is cheapest first and because it
-// is the order a person reads a request in; first-miss-only because an
-// expectation that differs in four fields is almost always wrong in the
-// first one, and four lines per expectation makes the report unreadable
-// at the exact moment it matters.
+// A path is matched by router-nv under the expectation's `RoutePolicy`.
+// A path that router-nv would answer with a redirect, such as `/users/`
+// for `/users` under `web_policy`, matches the expectation with the
+// spelling the redirect names.
 
 use mockexpect
+use routepat
+use routetree
+use routematch
 use matchers
 
 // Which part of a request an expectation disagreed about.
@@ -120,7 +115,7 @@ pub struct HmRequest
 //     println(mockmatch.request("GET", "/users/7").path)
 // ```
 pub fn request(method: Str, path: Str) -> HmRequest []
-    todo("httpmock-nv.mockmatch.request")
+    HmRequest { method: method, path: path, query: [], headers: [], body: "" }
 
 // The request with a query parameter.
 //
@@ -133,7 +128,9 @@ pub fn request(method: Str, path: Str) -> HmRequest []
 //     println("${list.len(r.query)}")
 // ```
 pub fn with_query(r: HmRequest, name: Str, value: Str) -> HmRequest []
-    todo("httpmock-nv.mockmatch.with_query")
+    HmRequest { method: r.method, path: r.path,
+                query: list.concat(r.query, [HmBinding { name: name, value: value }]),
+                headers: r.headers, body: r.body }
 
 // The request with a header.
 //
@@ -146,7 +143,9 @@ pub fn with_query(r: HmRequest, name: Str, value: Str) -> HmRequest []
 //     println("${list.len(r.headers)}")
 // ```
 pub fn with_header(r: HmRequest, name: Str, value: Str) -> HmRequest []
-    todo("httpmock-nv.mockmatch.with_header")
+    HmRequest { method: r.method, path: r.path, query: r.query,
+                headers: list.concat(r.headers, [HmBinding { name: name, value: value }]),
+                body: r.body }
 
 // The request with a body.
 //
@@ -157,7 +156,8 @@ pub fn with_header(r: HmRequest, name: Str, value: Str) -> HmRequest []
 //     println(mockmatch.with_body(mockmatch.request("POST", "/u"), "ping").body)
 // ```
 pub fn with_body(r: HmRequest, body: Str) -> HmRequest []
-    todo("httpmock-nv.mockmatch.with_body")
+    HmRequest { method: r.method, path: r.path, query: r.query, headers: r.headers,
+                body: body }
 
 // The request built from a target with a query string on it.
 //
@@ -171,7 +171,17 @@ pub fn with_body(r: HmRequest, body: Str) -> HmRequest []
 //     println(mockmatch.request_target("GET", "/s?q=novo&page=2").path)
 // ```
 pub fn request_target(method: Str, target: Str) -> HmRequest []
-    todo("httpmock-nv.mockmatch.request_target")
+    let bare = match str.index(target, "#")
+        Some(i) => str.slice(target, 0, i)
+        None    => target
+    match str.index(bare, "?")
+        None    => request(method, bare)
+        Some(i) =>
+            var pairs: [HmBinding] = []
+            for p in url.query_params(str.slice(bare, i + 1, str.len(bare)))
+                list.push(pairs, HmBinding { name: p.0, value: p.1 })
+            HmRequest { method: method, path: str.slice(bare, 0, i), query: pairs,
+                        headers: [], body: "" }
 
 // THE DECISION.  Which expectation serves this request, or why none
 // does.
@@ -193,7 +203,25 @@ pub fn request_target(method: Str, target: Str) -> HmRequest []
 //     println(mockmatch.decision_name(mockmatch.decide(es, [], mockmatch.request("GET", "/users/7"))))
 // ```
 pub fn decide(es: [mockexpect.HmExpectation], calls: [Int], r: HmRequest) -> HmDecision []
-    todo("httpmock-nv.mockmatch.decide")
+    var exhausted: ?HmDecision = None
+    var misses: [HmMiss] = []
+    for i in 0..list.len(es)
+        let e = es[i]
+        match miss_of(e, i, r)
+            Some(m) => list.push(misses, m)
+            None    =>
+                let served = if i < list.len(calls)
+                    calls[i]
+                else
+                    0
+                if mockexpect.times_exhausted(e.times, served)
+                    if exhausted == None
+                        exhausted = Some(HmExhausted(i, mockexpect.describe(e), e.times.at_most))
+                else
+                    return HmServe(i, bindings(e, r))
+    match exhausted
+        Some(d) => d
+        None    => HmUnmatched(misses)
 
 // Whether one expectation matches, ignoring how many times it has been
 // served.
@@ -211,7 +239,10 @@ pub fn decide(es: [mockexpect.HmExpectation], calls: [Int], r: HmRequest) -> HmD
 //     println("${hit}")
 // ```
 pub fn matches(e: mockexpect.HmExpectation, r: HmRequest) -> Bool []
-    todo("httpmock-nv.mockmatch.matches")
+    match miss_of(e, 0, HmRequest { method: r.method, path: r.path, query: r.query,
+                                    headers: r.headers, body: r.body })
+        Some(_) => false
+        None    => true
 
 // Why one expectation did not match, or `None` when it did.
 //
@@ -229,7 +260,47 @@ pub fn matches(e: mockexpect.HmExpectation, r: HmRequest) -> Bool []
 //         None    => println("matched")
 // ```
 pub fn miss_of(e: mockexpect.HmExpectation, index: Int, r: HmRequest) -> ?HmMiss []
-    todo("httpmock-nv.mockmatch.miss_of")
+    let label = mockexpect.describe(e)
+    if e.method != HmAnyMethod and mockexpect.method_name(e.method) != r.method
+        return Some(HmMiss { expectation: index, label: label, field: HmMethodField,
+                             wanted: mockexpect.method_name(e.method), got: r.method })
+    if not path_matches(e, r.path)
+        return Some(HmMiss { expectation: index, label: label, field: HmPathField,
+                             wanted: e.path.source, got: r.path })
+    for rule in e.query
+        match binding(r.query, rule.name)
+            Some(v) =>
+                if not matchers.matches(rule.value, v)
+                    return Some(HmMiss { expectation: index, label: label,
+                                         field: HmQueryField(rule.name),
+                                         wanted: describe_wanted(rule.value),
+                                         got: describe_got(rule.value, v) })
+            None    =>
+                if rule.required
+                    return Some(HmMiss { expectation: index, label: label,
+                                         field: HmQueryField(rule.name),
+                                         wanted: describe_wanted(rule.value), got: "absent" })
+    for rule in e.headers
+        match header(r, rule.name)
+            Some(v) =>
+                if not matchers.matches(rule.value, v)
+                    return Some(HmMiss { expectation: index, label: label,
+                                         field: HmHeaderField(rule.name),
+                                         wanted: describe_wanted(rule.value),
+                                         got: describe_got(rule.value, v) })
+            None    =>
+                if rule.required
+                    return Some(HmMiss { expectation: index, label: label,
+                                         field: HmHeaderField(rule.name),
+                                         wanted: describe_wanted(rule.value), got: "absent" })
+    match e.body
+        None    => None
+        Some(m) =>
+            if matchers.matches(m, r.body)
+                return None
+            Some(HmMiss { expectation: index, label: label, field: HmBodyField,
+                          wanted: describe_wanted(m),
+                          got: describe_got(m, r.body) })
 
 // The path parameters an expectation binds from a request.
 //
@@ -246,7 +317,9 @@ pub fn miss_of(e: mockexpect.HmExpectation, index: Int, r: HmRequest) -> ?HmMiss
 //     println("${list.len(bs)}")
 // ```
 pub fn bindings(e: mockexpect.HmExpectation, r: HmRequest) -> [HmBinding] []
-    todo("httpmock-nv.mockmatch.bindings")
+    match path_match(e, r.path)
+        Some(bs) => bs
+        None     => []
 
 // A binding's value by name, or `None`.
 //
@@ -263,7 +336,10 @@ pub fn bindings(e: mockexpect.HmExpectation, r: HmRequest) -> [HmBinding] []
 //         None    => println("unbound")
 // ```
 pub fn binding(bs: [HmBinding], name: Str) -> ?Str []
-    todo("httpmock-nv.mockmatch.binding")
+    for b in bs
+        if b.name == name
+            return Some(b.value)
+    None
 
 // A header's value by name, compared case-insensitively.
 //
@@ -281,7 +357,11 @@ pub fn binding(bs: [HmBinding], name: Str) -> ?Str []
 //         None    => println("absent")
 // ```
 pub fn header(r: HmRequest, name: Str) -> ?Str []
-    todo("httpmock-nv.mockmatch.header")
+    let want = str.lower(name)
+    for h in r.headers
+        if str.lower(h.name) == want
+            return Some(h.value)
+    None
 
 // The decision's short name: `serve`, `unmatched`, `exhausted`.
 //
@@ -292,7 +372,10 @@ pub fn header(r: HmRequest, name: Str) -> ?Str []
 //     println(mockmatch.decision_name(HmUnmatched([])))
 // ```
 pub fn decision_name(d: HmDecision) -> Str []
-    todo("httpmock-nv.mockmatch.decision_name")
+    match d
+        HmServe(_, _)        => "serve"
+        HmUnmatched(_)       => "unmatched"
+        HmExhausted(_, _, _) => "exhausted"
 
 // The field's name as a report writes it: `method`, `path`,
 // `query q`, `header Authorization`, `body`.
@@ -304,7 +387,12 @@ pub fn decision_name(d: HmDecision) -> Str []
 //     println(mockmatch.field_name(HmHeaderField("Authorization")))
 // ```
 pub fn field_name(f: HmField) -> Str []
-    todo("httpmock-nv.mockmatch.field_name")
+    match f
+        HmMethodField    => "method"
+        HmPathField      => "path"
+        HmQueryField(n)  => "query " + n
+        HmHeaderField(n) => "header " + n
+        HmBodyField      => "body"
 
 // One miss as one line: the index, the label, the field, wanted, was.
 //
@@ -317,7 +405,7 @@ pub fn field_name(f: HmField) -> Str []
 //     println(mockmatch.miss_line(m))
 // ```
 pub fn miss_line(m: HmMiss) -> Str []
-    todo("httpmock-nv.mockmatch.miss_line")
+    flat("#${m.expectation} ${m.label}: ${field_name(m.field)} wanted ${m.wanted}, was ${m.got}")
 
 // The whole unmatched report: the request line, then one line per
 // expectation.
@@ -332,7 +420,10 @@ pub fn miss_line(m: HmMiss) -> Str []
 //     println(mockmatch.unmatched_report(mockmatch.request("POST", "/users"), []))
 // ```
 pub fn unmatched_report(r: HmRequest, misses: [HmMiss]) -> Str []
-    todo("httpmock-nv.mockmatch.unmatched_report")
+    var lines = ["no expectation matched " + request_line(r)]
+    for m in misses
+        list.push(lines, "  " + miss_line(m))
+    str.join(lines, "\n")
 
 // The request as one line: method, path, and the query if there is one.
 //
@@ -343,7 +434,12 @@ pub fn unmatched_report(r: HmRequest, misses: [HmMiss]) -> Str []
 //     println(mockmatch.request_line(mockmatch.request("GET", "/users/7")))
 // ```
 pub fn request_line(r: HmRequest) -> Str []
-    todo("httpmock-nv.mockmatch.request_line")
+    if list.len(r.query) == 0
+        return r.method + " " + r.path
+    var pairs: [(Str, Str)] = []
+    for q in r.query
+        list.push(pairs, (q.name, q.value))
+    r.method + " " + r.path + "?" + url.query_string(pairs)
 
 // A matcher's own description, which is where `wanted` comes from.
 //
@@ -358,7 +454,7 @@ pub fn request_line(r: HmRequest) -> Str []
 //     println(mockmatch.describe_wanted(matchtext.starts_with("Bearer ")))
 // ```
 pub fn describe_wanted(m: Matcher<Str>) -> Str []
-    todo("httpmock-nv.mockmatch.describe_wanted")
+    matchers.describe(m)
 
 // What a matcher says about a value that did not satisfy it, which is
 // where `got` comes from.
@@ -371,7 +467,7 @@ pub fn describe_wanted(m: Matcher<Str>) -> Str []
 //     println(mockmatch.describe_got(matchtext.starts_with("Bearer "), "Basic dXNlcg=="))
 // ```
 pub fn describe_got(m: Matcher<Str>, value: Str) -> Str []
-    todo("httpmock-nv.mockmatch.describe_got")
+    matchers.describe_mismatch(m, value)
 
 // Whether two JSON documents are equal as JSON.
 //
@@ -387,4 +483,48 @@ pub fn describe_got(m: Matcher<Str>, value: Str) -> Str []
 //     println("${same}")
 // ```
 pub fn json_equal(a: Str, b: Str) -> Bool []
-    todo("httpmock-nv.mockmatch.json_equal")
+    let ja = json.parse(a)
+    let jb = json.parse(b)
+    match ja
+        Some(x) =>
+            match jb
+                Some(y) => json.equals(x, y)
+                None    => a == b
+        None    => a == b
+
+// The path parameters the expectation binds from `path`, or `None` when
+// the path does not match.
+fn path_match(e: HmExpectation, path: Str) -> ?[HmBinding]
+    if not mockexpect.matchable(e)
+        return None
+    match routetree.insert_parsed(routetree.tree(e.policy), e.path, routepat.methods_any(), 0)
+        // cov: skip — a tree that holds one route has nothing for the route to conflict with
+        Err(_) => None
+        Ok(t)  =>
+            match routematch.match_path(t, path, "GET")
+                RouteFound(m)        => Some(bound(path, m))
+                RouteRedirect(to, _) => redirected(t, to)
+                _                    => None
+
+// The match of the spelling a redirect names.  Router-nv answers a
+// redirect only for a spelling that matches.
+fn redirected(t: routetree.RouteTree, path: Str) -> ?[HmBinding]
+    match routematch.match_path(t, path, "GET")
+        RouteFound(m) => Some(bound(path, m))
+        // cov: skip — the redirect names a spelling that router-nv has just matched
+        _             => None
+
+fn bound(path: Str, m: RouteMatch) -> [HmBinding]
+    var out: [HmBinding] = []
+    for b in m.params
+        list.push(out, HmBinding { name: b.name, value: routematch.param_str(path, m, b.name) ?? "" })
+    out
+
+fn path_matches(e: HmExpectation, path: Str) -> Bool
+    match path_match(e, path)
+        Some(_) => true
+        None    => false
+
+// A description on one line: line breaks become spaces.
+fn flat(s: Str) -> Str
+    str.replace(str.replace(s, "\r", " "), "\n", " ")

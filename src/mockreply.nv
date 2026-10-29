@@ -1,30 +1,22 @@
 // mockreply.nv — what an expectation answers with.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// A reply is a value and not a handler.  The standard library's handler
+// type is a plain function with a six-label effect row, so a reply that
+// was a handler would cost that row, and could not be compared, printed
+// or stored.  `HmReply` is a status, headers and a body.  `mockserver`
+// converts one to the standard library's `HttpResponse` at the last
+// moment, and that conversion is the only place in this package that
+// names that type.
 //
-// A RESPONSE IS A VALUE AND NOT A HANDLER.  `http.server`'s handler
-// type is `fn(HttpRequest) -> HttpResponse [io, fs, net, mutate, time,
-// async]` — a plain function with a six-label row — so a mock whose
-// responses were handlers would make every canned reply cost that row
-// and would make a response impossible to compare, print or store.
+// A reply that depends on the request uses the `templated` field: `${id}`
+// in a body or a header value is replaced by the path parameter `id`
+// that the match bound.  There are no conditionals, no arithmetic and no
+// way into code.  A mock whose replies are programs is a second
+// implementation of the service under test.
 //
-// Here `HmReply` is status, headers and body. `mockserver` converts one
-// to the standard library's `HttpResponse` at the last moment, which is
-// the only place in this package that mentions that type — and the
-// reason every test of what a mock answers is a comparison of two
-// values.
-//
-// THE ONE THING A VALUE CANNOT EXPRESS is a reply computed from the
-// request, and the `templated` field is the deliberate, narrow answer:
-// `${id}` in a body or a header is substituted from the path bindings
-// the match produced. Narrow on purpose — no conditionals, no
-// arithmetic, no escape into code — because a mock whose responses are
-// programs is a second implementation of the service under test, which
-// is how a suite ends up testing the mock.
-//
-// A DELAY IS A FIELD AND NOT A SLEEP CALL.  `delay_ms` makes "the
+// A delay is a field and not a call to sleep.  `delay_ms` makes "the
 // client must time out" testable, and it is on the value so that a test
-// of the DECISION can assert the delay without waiting for it.
+// of the decision can assert the delay without waiting for it.
 
 use mockmatch
 
@@ -63,7 +55,7 @@ pub struct HmReply
 //     println("${r.status}")
 // ```
 pub fn status(code: Int) -> HmReply []
-    todo("httpmock-nv.mockreply.status")
+    HmReply { status: code, headers: [], body: "", delay_ms: 0, templated: true }
 
 // A `200` with a text body and `text/plain; charset=utf-8`.
 //
@@ -74,7 +66,8 @@ pub fn status(code: Int) -> HmReply []
 //     println(mockreply.text(200, "pong").body)
 // ```
 pub fn text(code: Int, body: Str) -> HmReply []
-    todo("httpmock-nv.mockreply.text")
+    // workaround(a-parameter-named-like-a-function-of-its-module-makes-the-call-through-the-module-segfault): a call to the function `body` from a function that has a parameter `body` crashes when reached through the module, so both constructors call `typed`.
+    typed(code, "text/plain; charset=utf-8", body)
 
 // A reply with a JSON body and `application/json; charset=utf-8`.
 //
@@ -91,7 +84,8 @@ pub fn text(code: Int, body: Str) -> HmReply []
 //     println("${r.status}")
 // ```
 pub fn json(code: Int, body: Str) -> HmReply []
-    todo("httpmock-nv.mockreply.json")
+    // workaround(a-parameter-named-like-a-function-of-its-module-makes-the-call-through-the-module-segfault): see `text`.
+    typed(code, "application/json; charset=utf-8", body)
 
 // A reply with a body and a content type the caller names.
 //
@@ -103,7 +97,7 @@ pub fn json(code: Int, body: Str) -> HmReply []
 //     println("${r.status}")
 // ```
 pub fn body(code: Int, content_type: Str, payload: Str) -> HmReply []
-    todo("httpmock-nv.mockreply.body")
+    typed(code, content_type, payload)
 
 // A `3xx` with a `Location`.
 //
@@ -115,7 +109,7 @@ pub fn body(code: Int, content_type: Str, payload: Str) -> HmReply []
 //     println("${r.status}")
 // ```
 pub fn redirect(code: Int, location: Str) -> HmReply []
-    todo("httpmock-nv.mockreply.redirect")
+    with_header(status(code), "Location", location)
 
 // The reply with one more header.
 //
@@ -128,7 +122,9 @@ pub fn redirect(code: Int, location: Str) -> HmReply []
 //     println("${list.len(r.headers)}")
 // ```
 pub fn with_header(r: HmReply, name: Str, value: Str) -> HmReply []
-    todo("httpmock-nv.mockreply.with_header")
+    HmReply { status: r.status,
+              headers: list.concat(r.headers, [HmHeader { name: name, value: value }]),
+              body: r.body, delay_ms: r.delay_ms, templated: r.templated }
 
 // The reply with a delay before it is sent.
 //
@@ -143,7 +139,8 @@ pub fn with_header(r: HmReply, name: Str, value: Str) -> HmReply []
 //     println("${r.delay_ms}")
 // ```
 pub fn with_delay(r: HmReply, ms: Int) -> HmReply []
-    todo("httpmock-nv.mockreply.with_delay")
+    HmReply { status: r.status, headers: r.headers, body: r.body, delay_ms: ms,
+              templated: r.templated }
 
 // The reply with template substitution turned off.
 //
@@ -158,7 +155,8 @@ pub fn with_delay(r: HmReply, ms: Int) -> HmReply []
 //     println("${r.templated}")
 // ```
 pub fn body_literal(r: HmReply) -> HmReply []
-    todo("httpmock-nv.mockreply.body_literal")
+    HmReply { status: r.status, headers: r.headers, body: r.body, delay_ms: r.delay_ms,
+              templated: false }
 
 // The reply, with `${name}` substituted from the path bindings.
 //
@@ -175,7 +173,13 @@ pub fn body_literal(r: HmReply) -> HmReply []
 //     println(r.body)
 // ```
 pub fn render(r: HmReply, bindings: [mockmatch.HmBinding]) -> HmReply []
-    todo("httpmock-nv.mockreply.render")
+    if not r.templated
+        return r
+    var headers: [HmHeader] = []
+    for h in r.headers
+        list.push(headers, HmHeader { name: h.name, value: substituted(h.value, bindings) })
+    HmReply { status: r.status, headers: headers, body: substituted(r.body, bindings),
+              delay_ms: r.delay_ms, templated: false }
 
 // Every `${name}` a reply names, in order.
 //
@@ -191,7 +195,12 @@ pub fn render(r: HmReply, bindings: [mockmatch.HmBinding]) -> HmReply []
 //     println("${list.len(names)}")
 // ```
 pub fn template_names(r: HmReply) -> [Str] []
-    todo("httpmock-nv.mockreply.template_names")
+    if not r.templated
+        return []
+    var out = names_in(r.body)
+    for h in r.headers
+        out = list.concat(out, names_in(h.value))
+    out
 
 // A header's value on a reply, compared case-insensitively.
 //
@@ -204,7 +213,11 @@ pub fn template_names(r: HmReply) -> [Str] []
 //         None    => println("absent")
 // ```
 pub fn header(r: HmReply, name: Str) -> ?Str []
-    todo("httpmock-nv.mockreply.header")
+    let want = str.lower(name)
+    for h in r.headers
+        if str.lower(h.name) == want
+            return Some(h.value)
+    None
 
 // The reply the mock sends when nothing matched: `404`, with
 // `mockmatch.unmatched_report` as the body.
@@ -222,7 +235,7 @@ pub fn header(r: HmReply, name: Str) -> ?Str []
 //     println("${r.status}")
 // ```
 pub fn unmatched(r: mockmatch.HmRequest, misses: [mockmatch.HmMiss]) -> HmReply []
-    todo("httpmock-nv.mockreply.unmatched")
+    body_literal(text(404, mockmatch.unmatched_report(r, misses)))
 
 // The reply the mock sends when an expectation is out of calls: `409`,
 // naming the expectation and its ceiling.
@@ -239,7 +252,8 @@ pub fn unmatched(r: mockmatch.HmRequest, misses: [mockmatch.HmMiss]) -> HmReply 
 //     println("${r.status}")
 // ```
 pub fn exhausted(label: Str, limit: Int) -> HmReply []
-    todo("httpmock-nv.mockreply.exhausted")
+    body_literal(text(409, "expectation " + label + " has been served " + str.from_int(limit)
+                           + " time(s), which is as many as it allows"))
 
 // The reply as one line for a log: the status and the body's length.
 //
@@ -250,4 +264,54 @@ pub fn exhausted(label: Str, limit: Int) -> HmReply []
 //     println(mockreply.reply_line(mockreply.text(200, "pong")))
 // ```
 pub fn reply_line(r: HmReply) -> Str []
-    todo("httpmock-nv.mockreply.reply_line")
+    "${r.status} (${str.len(r.body)} bytes)"
+
+// The position of the next complete `${name}` at or after `from`, as the
+// offsets of `$` and of `}`, or `None`.
+fn next_hole(s: Str, from: Int) -> ?(Int, Int)
+    match str.index_from(s, "\${", from)
+        None    => None
+        Some(a) =>
+            match str.index_from(s, "}", a + 2)
+                None    => None
+                Some(b) => Some((a, b))
+
+// `s` with each `${name}` that has a binding replaced by its value.  A
+// name with no binding is left as written, and so is a `${` with no
+// closing brace.  A value is inserted as it is and is not scanned again.
+fn substituted(s: Str, bindings: [mockmatch.HmBinding]) -> Str
+    var out = ""
+    var at = 0
+    var more = true
+    while more
+        match next_hole(s, at)
+            None       =>
+                out = out + str.slice(s, at, str.len(s))
+                more = false
+            Some(hole) =>
+                let name = str.slice(s, hole.0 + 2, hole.1)
+                out = out + str.slice(s, at, hole.0)
+                match mockmatch.binding(bindings, name)
+                    Some(v) =>
+                        out = out + v
+                    None    =>
+                        out = out + str.slice(s, hole.0, hole.1 + 1)
+                at = hole.1 + 1
+    out
+
+fn names_in(s: Str) -> [Str]
+    var out: [Str] = []
+    var at = 0
+    var more = true
+    while more
+        match next_hole(s, at)
+            None       =>
+                more = false
+            Some(hole) =>
+                list.push(out, str.slice(s, hole.0 + 2, hole.1))
+                at = hole.1 + 1
+    out
+
+fn typed(code: Int, content_type: Str, payload: Str) -> HmReply
+    HmReply { status: code, headers: [HmHeader { name: "Content-Type", value: content_type }],
+              body: payload, delay_ms: 0, templated: true }

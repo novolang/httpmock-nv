@@ -1,48 +1,42 @@
-// mockserver.nv — the socket, and the four lines of it that are hard.
+// mockserver.nv — the socket, and the four things about it that are hard.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// The port is zero and the kernel answers.  `start` binds port 0, which
+// asks the operating system for an unused port, and `HmMock.port` is the
+// one it gave.  A hard-coded port is flaky under a parallel run and
+// under `TIME_WAIT`, and scanning for a free one is racy because the
+// scan and the bind are two steps.  A test never writes a port; it gives
+// its client `base_url`.
 //
-// THE PORT IS ZERO AND THE KERNEL ANSWERS.  `start` binds port 0, which
-// asks the operating system for an unused port, and `HmMock.port` is
-// what it gave.  The alternatives are both broken and both common: a
-// hard-coded port is flaky under a parallel run and under `TIME_WAIT`,
-// and scanning for a free one is racy, because the scan and the bind
-// are two steps.  `net.local_port` exists for exactly this and
-// `HttpServer.port()` surfaces it.
+// The mock listens on the loopback address only.  A stub server has no
+// reason to be reachable from the network.
 //
-// So a test never writes a port, and `base_url` is what it gives its
-// client.
+// The teardown is explicit, because the language has no destructors.
+// `stop` drains, closes the listener and answers.  `with_mock` starts a
+// mock, runs a function with it and stops it when the function returns.
+// A panic ends the process, so the listener goes with it.
 //
-// THE TEARDOWN IS EXPLICIT, because the language has no destructors —
-// the same fact tempdir-nv is built around.  `stop` drains, closes the
-// listener and answers; `with_mock` is the shape that cannot be
-// forgotten, and it stops the server whether the body returned or
-// panicked.  Both are published for the same reason both are published
-// there: a suite-wide mock outlives one function, and a per-test mock
-// should not need a teardown hook.
+// One mock runs per process.  The standard library's async server keeps
+// its connection queue, its shutdown flag, its live-worker count and its
+// handler in module-level state, so a second `serve_async` would
+// overwrite the first one's and the first one's tasks would serve the
+// second one's rules.  `start` therefore refuses a second mock with
+// `HmAlreadyRunning`.
 //
-// ONE MOCK PER PROCESS, and this is a constraint the standard library
-// imposes rather than a simplification.  `std.http`'s async server
-// keeps its connection queue, its shutdown flag, its live-worker count
-// and its handler in module-level state: "a second `serve_async`
-// overwrites the first's shared state, and the first's tasks then serve
-// the second's app".  So `start` refuses a second mock with
-// `HmAlreadyRunning` rather than producing one that silently answers
-// the other's expectations.  A suite that needs two services at once
-// needs `std.http` to carry its state on the `HttpServer` value; that
-// is the row to widen, and it is named here rather than worked around.
-//
-// THE HANDLER IS ONE STATIC FUNCTION.  `http.server`'s app is a plain
-// `fn` with a six-label row and no capture, so the expectations cannot
-// live in a closure; `dispatch` is published as that function, it reads
-// the running mock's rules, and it is the only place in this package
-// that mentions `HttpRequest` and `HttpResponse`.  Everything it does
-// between reading the request and writing the response is
-// `mockmatch.decide`, which is `[]`.
+// The handler is one static function.  The standard library's app is a
+// plain `fn` with a six-label row and no capture, so the rules live in
+// `mockstate` and `dispatch` reads them.  `dispatch` and the two
+// conversions are the only places in this package that name `HttpRequest`
+// and `HttpResponse`.  Between reading the request and writing the
+// response, `dispatch` calls `mockmatch.decide`, which has no effect.
 
 use mockexpect
 use mockmatch
 use mockreply
+use mockstate
+
+// The running server's handle, and the port it was given.
+var live: ?HttpServer = None
+var held_port: Int    = 0
 
 // An expectation paired with what it answers.
 //
@@ -82,6 +76,8 @@ pub enum HmError
     // the pattern named, rather than becoming a rule that silently
     // matches nothing.
     HmBadPattern(index: Int, pattern: Str)
+    // The listener could not be closed, with what the platform said.
+    HmStopFailed(reason: Str)
 
 // The sentence a `Result<_, HmError>` carries.
 //
@@ -102,9 +98,13 @@ pub enum HmError
 //         Err(e) => println(e.message())
 // ```
 impl Error for HmError
-    // Panics with `not implemented` until the bodies land.
     fn message(self) -> Str
-        todo("httpmock-nv.mockserver.HmError.message")
+        match self
+            HmAlreadyRunning(port) => "a mock is already running on port ${port}; the standard library runs one server per process"
+            HmBindFailed(reason)   => "the mock could not bind: ${reason}"
+            HmNotRunning           => "no mock is running"
+            HmBadPattern(i, p)     => "the path pattern of rule ${i} does not parse: ${p}"
+            HmStopFailed(reason)   => "the mock could not be stopped: ${reason}"
 
 // An expectation paired with its reply.
 //
@@ -118,7 +118,7 @@ impl Error for HmError
 //     println(r.reply.body)
 // ```
 pub fn rule(e: mockexpect.HmExpectation, reply: mockreply.HmReply) -> HmRule []
-    todo("httpmock-nv.mockserver.rule")
+    HmRule { expectation: e, reply: reply }
 
 // Start a mock on a port the kernel chooses, bound to the loopback
 // address only.
@@ -144,7 +144,7 @@ pub fn rule(e: mockexpect.HmExpectation, reply: mockreply.HmReply) -> HmRule []
 //         Err(e) => println(e.message())
 // ```
 pub fn start(rules: [HmRule]) -> Result<HmMock, HmError> [io, fs, net, time, mutate, async]
-    todo("httpmock-nv.mockserver.start")
+    start_on("127.0.0.1", 0, rules)
 
 // Start a mock on an address and port the caller names.
 //
@@ -162,7 +162,27 @@ pub fn start(rules: [HmRule]) -> Result<HmMock, HmError> [io, fs, net, time, mut
 // ```
 pub fn start_on(host: Str, port: Int,
                 rules: [HmRule]) -> Result<HmMock, HmError> [io, fs, net, time, mutate, async]
-    todo("httpmock-nv.mockserver.start_on")
+    if live != None
+        return Err(HmAlreadyRunning(held_port))
+    for i in 0..list.len(rules)
+        if not mockexpect.matchable(rules[i].expectation)
+            return Err(HmBadPattern(i, rules[i].expectation.path.source))
+    var es: [HmExpectation] = []
+    var rs: [mockreply.HmReply] = []
+    for r in rules
+        list.push(es, r.expectation)
+        list.push(rs, r.reply)
+    mockstate.begin(es, rs)
+    match http.server.serve_async_on(host, port, dispatch, http.server.serve_opts(), workers())
+        Err(e)  => Err(HmBindFailed(e.message()))
+        Ok(srv) =>
+            live = Some(srv)
+            held_port = srv.port()
+            let shown = if host == ""
+                "127.0.0.1"
+            else
+                host
+            Ok(HmMock { port: held_port, base: "http://${shown}:${held_port}", rules: list.len(rules) })
 
 // The base a client prepends: `http://127.0.0.1:<port>`, no trailing
 // slash.
@@ -174,7 +194,7 @@ pub fn start_on(host: Str, port: Int,
 //     println(mockserver.base_url(HmMock { port: 8080, base: "http://127.0.0.1:8080", rules: 0 }))
 // ```
 pub fn base_url(m: HmMock) -> Str []
-    todo("httpmock-nv.mockserver.base_url")
+    m.base
 
 // The full URL of a path on the mock.
 //
@@ -189,7 +209,9 @@ pub fn base_url(m: HmMock) -> Str []
 //     println(mockserver.url_for(m, "/users/7"))
 // ```
 pub fn url_for(m: HmMock, path: Str) -> Str []
-    todo("httpmock-nv.mockserver.url_for")
+    if str.starts_with(path, "/")
+        return m.base + path
+    m.base + "/" + path
 
 // Stop the mock: stop accepting, drain what was accepted, close the
 // listener.
@@ -210,7 +232,7 @@ pub fn url_for(m: HmMock, path: Str) -> Str []
 //                 None    => println("stopped")
 // ```
 pub fn stop(m: HmMock) -> ?HmError [io, net, time, mutate, async]
-    todo("httpmock-nv.mockserver.stop")
+    stop_within(m, default_grace_ms())
 
 // Stop the mock, waiting at most `grace_ms` for what is in flight.
 //
@@ -226,13 +248,22 @@ pub fn stop(m: HmMock) -> ?HmError [io, net, time, mutate, async]
 //                 None    => println("stopped")
 // ```
 pub fn stop_within(m: HmMock, grace_ms: Int) -> ?HmError [io, net, time, mutate, async]
-    todo("httpmock-nv.mockserver.stop_within")
+    match live
+        None    => Some(HmNotRunning)
+        Some(s) =>
+            live = None
+            held_port = 0
+            match http.server.shutdown_async(s, grace_ms)
+                None    => None
+                // cov: skip — closing a listener that was bound a moment ago does not fail, and a test cannot make it
+                Some(e) => Some(HmStopFailed(e.message()))
 
 // Start a mock, run `body` with it, stop it, answer what `body`
 // answered.
 //
 // The shape that cannot be forgotten, and the one a single test should
-// use.  The server is stopped whether `body` returned or panicked.
+// use.  The server is stopped when `body` returns; a panic in `body` ends
+// the process, and the listener goes with it.
 //
 // `body` is a NAMED function, and its row is concrete for the same
 // reason tempdir-nv's is: a function-typed parameter cannot bind an
@@ -258,7 +289,12 @@ pub fn stop_within(m: HmMock, grace_ms: Int) -> ?HmError [io, net, time, mutate,
 // ```
 pub fn with_mock<T>(rules: [HmRule],
                     body: fn(HmMock) -> T [io, net, async]) -> Result<T, HmError> [io, fs, net, time, mutate, async]
-    todo("httpmock-nv.mockserver.with_mock")
+    match start(rules)
+        Err(e) => Err(e)
+        Ok(m)  =>
+            let value = body(m)
+            let _ = stop(m)
+            Ok(value)
 
 // Whether a mock is running in this process.
 //
@@ -272,7 +308,7 @@ pub fn with_mock<T>(rules: [HmRule],
 //     println("${mockserver.is_running()}")
 // ```
 pub fn is_running() -> Bool [mutate]
-    todo("httpmock-nv.mockserver.is_running")
+    live != None
 
 // The handler `start` hands to `http.server.serve_async`.
 //
@@ -293,7 +329,21 @@ pub fn is_running() -> Bool [mutate]
 //     println("${http.server.status(resp)}")
 // ```
 pub fn dispatch(req: HttpRequest) -> HttpResponse [io, fs, net, mutate, time, async]
-    todo("httpmock-nv.mockserver.dispatch")
+    let r = to_request(req)
+    match mockmatch.decide(mockstate.expectations(), mockstate.counts(), r)
+        HmServe(i, params)           =>
+            let reply = mockreply.render(mockstate.replies()[i], params)
+            mockstate.note(r, i, reply.status, [])
+            pause(reply.delay_ms)
+            to_response(reply)
+        HmUnmatched(misses)          =>
+            let reply = mockreply.unmatched(r, misses)
+            mockstate.note(r, 0 - 1, reply.status, misses)
+            to_response(reply)
+        HmExhausted(_, label, limit) =>
+            let reply = mockreply.exhausted(label, limit)
+            mockstate.note(r, 0 - 1, reply.status, [])
+            to_response(reply)
 
 // The standard library's request, as the value the matching works on.
 //
@@ -310,7 +360,14 @@ pub fn dispatch(req: HttpRequest) -> HttpResponse [io, fs, net, mutate, time, as
 //     println(mockmatch.request_line(mockserver.to_request(http.server.request("GET", "/ping"))))
 // ```
 pub fn to_request(req: HttpRequest) -> mockmatch.HmRequest []
-    todo("httpmock-nv.mockserver.to_request")
+    var pairs: [HmBinding] = []
+    for p in url.query_params(req.query)
+        list.push(pairs, HmBinding { name: p.0, value: p.1 })
+    var headers: [HmBinding] = []
+    for h in req.headers
+        list.push(headers, HmBinding { name: h.name, value: h.value })
+    HmRequest { method: req.method, path: req.path, query: pairs, headers: headers,
+                body: http.server.body_str(req) }
 
 // A reply, as the standard library's response.
 //
@@ -327,7 +384,11 @@ pub fn to_request(req: HttpRequest) -> mockmatch.HmRequest []
 //     println("${http.server.status(mockserver.to_response(mockreply.text(200, "pong")))}")
 // ```
 pub fn to_response(r: mockreply.HmReply) -> HttpResponse []
-    todo("httpmock-nv.mockserver.to_response")
+    var resp = base_response(r)
+    for h in r.headers
+        if str.lower(h.name) != "content-type"
+            resp = http.server.with_header(resp, h.name, h.value)
+    resp
 
 // How many worker tasks a mock runs: 4.
 //
@@ -342,7 +403,7 @@ pub fn to_response(r: mockreply.HmReply) -> HttpResponse []
 //     println("${mockserver.workers()}")
 // ```
 pub fn workers() -> Int []
-    todo("httpmock-nv.mockserver.workers")
+    4
 
 // How long `stop` waits for what is in flight, by default: 500 ms.
 //
@@ -353,4 +414,20 @@ pub fn workers() -> Int []
 //     println("${mockserver.default_grace_ms()}")
 // ```
 pub fn default_grace_ms() -> Int []
-    todo("httpmock-nv.mockserver.default_grace_ms")
+    500
+
+// The standard library's response for a reply's status, content type and
+// body.  The content type is the reply's `Content-Type` header, which
+// `http.server.bytes` writes itself.
+fn base_response(r: mockreply.HmReply) -> HttpResponse
+    let kind = mockreply.header(r, "Content-Type") ?? ""
+    if kind == "" and r.body == ""
+        return http.server.empty(r.status)
+    if kind == ""
+        return http.server.bytes(r.status, "application/octet-stream", bytes.from_str(r.body))
+    http.server.bytes(r.status, kind, bytes.from_str(r.body))
+
+// Wait `ms` milliseconds, parking the task and not the thread.
+fn pause(ms: Int) [time]
+    if ms > 0
+        time.sleep(int.to_float(ms) / 1000.0)

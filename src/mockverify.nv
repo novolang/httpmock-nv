@@ -1,39 +1,30 @@
-// mockverify.nv — what the mock saw, and whether that is what was
-// asked for.
+// mockverify.nv — what the mock saw, and whether that is what was asked
+// for.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// The mock records every request, matched or not.  An unmatched request
+// is a recorded fact with the misses attached, so "the client called
+// `/users/7` and I expected `/users/:id` with an `Authorization` header"
+// is answerable afterwards from the values, without turning on a log.
 //
-// THE MOCK RECORDS EVERY REQUEST, MATCHED OR NOT.  An unmatched request
-// is not an error the server swallows into a 404 — it is a recorded
-// fact with the misses attached, so "the client called `/users/7` and
-// I expected `/users/:id` with an `Authorization` header" is answerable
-// after the fact, from the values, without turning on a log.
+// A request nobody expected is as interesting as an expectation nobody
+// called, and most mock libraries report only the second.  Here it is
+// `HmVerdict.unexpected`.  A request that matched an expectation already
+// out of calls was answered `409`, and it is `HmVerdict.over_served`.
 //
-// A REQUEST THAT NOBODY EXPECTED IS AS INTERESTING AS AN EXPECTATION
-// NOBODY CALLED, and most mock libraries report only the second.  A
-// client that fires a telemetry request the test never intended is a
-// real defect, and here it is `HmVerdict.unexpected` rather than a line
-// in a log nobody reads.
+// The verdict is a value.  `verify_counts`, which holds the whole rule,
+// has no effect.  Reading the recording costs `[mutate]`, because it
+// reads the running server's shared state, and nothing more.  The
+// recording stays readable after `mockserver.stop`.
 //
-// THE VERDICT IS A VALUE, and `verify_counts` — the whole rule — is
-// `[]`.  Reading the recording costs `[mutate]`, because that is what
-// reading the running server's shared state costs and nothing more;
-// deciding what the recording MEANS costs nothing.  So every
-// interesting case in this package's own suite is a list of counts in
-// and a verdict out.
-//
-// THE FAILURE TEXT IS matchers-nv's SHAPE: what was expected, then what
-// happened, in that order, one line each, with the expectation's label
-// in front so a reader does not count indexes.
-//
-//     the mock was not satisfied
-//       #1 create a user — expected exactly 1 call, was 0
-//       unexpected POST /telemetry (no expectation matched: #0 path,
-//         #1 method)
+// The failure text is matchers-nv's shape: what was expected, then what
+// happened, one line each, with the expectation's label in front so a
+// reader does not count indexes.
 
 use mockexpect
 use mockmatch
 use mockserver
+use mockstate
+use std.test
 
 // One request the mock saw.
 pub struct HmRecorded
@@ -83,7 +74,13 @@ pub struct HmVerdict
 //         Ok(m)  => println("${list.len(mockverify.recorded(m))}")
 // ```
 pub fn recorded(m: mockserver.HmMock) -> [HmRecorded] [mutate]
-    todo("httpmock-nv.mockverify.recorded")
+    var out: [HmRecorded] = []
+    for i in 0..mockstate.log_size()
+        list.push(out, HmRecorded { sequence: i, request: mockstate.log_request(i),
+                                    served_by: mockstate.log_served(i),
+                                    status: mockstate.log_status(i),
+                                    misses: mockstate.log_misses(i) })
+    out
 
 // How many requests the mock has seen.
 //
@@ -97,7 +94,7 @@ pub fn recorded(m: mockserver.HmMock) -> [HmRecorded] [mutate]
 //         Ok(m)  => println("${mockverify.request_count(m)}")
 // ```
 pub fn request_count(m: mockserver.HmMock) -> Int [mutate]
-    todo("httpmock-nv.mockverify.request_count")
+    mockstate.log_size()
 
 // The most recent request, or `None`.
 //
@@ -118,7 +115,10 @@ pub fn request_count(m: mockserver.HmMock) -> Int [mutate]
 //                 None      => println("nothing yet")
 // ```
 pub fn last_request(m: mockserver.HmMock) -> ?HmRecorded [mutate]
-    todo("httpmock-nv.mockverify.last_request")
+    let all = recorded(m)
+    if list.len(all) == 0
+        return None
+    Some(all[list.len(all) - 1])
 
 // Every request one rule served, oldest first.
 //
@@ -133,7 +133,11 @@ pub fn last_request(m: mockserver.HmMock) -> ?HmRecorded [mutate]
 //         Ok(m)  => println("${list.len(mockverify.served_by(m, 0))}")
 // ```
 pub fn served_by(m: mockserver.HmMock, rule: Int) -> [HmRecorded] [mutate]
-    todo("httpmock-nv.mockverify.served_by")
+    var out: [HmRecorded] = []
+    for r in recorded(m)
+        if r.served_by == rule
+            list.push(out, r)
+    out
 
 // How many times each rule has been served, by index.
 //
@@ -152,7 +156,7 @@ pub fn served_by(m: mockserver.HmMock, rule: Int) -> [HmRecorded] [mutate]
 //         Ok(m)  => println("${list.len(mockverify.call_counts(m))}")
 // ```
 pub fn call_counts(m: mockserver.HmMock) -> [Int] [mutate]
-    todo("httpmock-nv.mockverify.call_counts")
+    mockstate.counts()
 
 // Every request no rule matched.
 //
@@ -167,7 +171,11 @@ pub fn call_counts(m: mockserver.HmMock) -> [Int] [mutate]
 //         Ok(m)  => println("${list.len(mockverify.unexpected(m))}")
 // ```
 pub fn unexpected(m: mockserver.HmMock) -> [HmRecorded] [mutate]
-    todo("httpmock-nv.mockverify.unexpected")
+    var out: [HmRecorded] = []
+    for r in recorded(m)
+        if is_unexpected(r)
+            list.push(out, r)
+    out
 
 // Forget everything recorded so far, keeping the rules.
 //
@@ -188,7 +196,10 @@ pub fn unexpected(m: mockserver.HmMock) -> [HmRecorded] [mutate]
 //                 None    => println("cleared")
 // ```
 pub fn clear(m: mockserver.HmMock) -> ?mockserver.HmError [mutate]
-    todo("httpmock-nv.mockverify.clear")
+    if not mockserver.is_running()
+        return Some(HmNotRunning)
+    mockstate.forget()
+    None
 
 // Whether the mock did what was asked of it.
 //
@@ -202,7 +213,7 @@ pub fn clear(m: mockserver.HmMock) -> ?mockserver.HmError [mutate]
 //         Ok(m)  => println("${mockverify.verify(m, []).satisfied}")
 // ```
 pub fn verify(m: mockserver.HmMock, rules: [mockserver.HmRule]) -> HmVerdict [mutate]
-    todo("httpmock-nv.mockverify.verify")
+    verify_counts(rules, call_counts(m), recorded(m))
 
 // THE RULE, as a pure function.
 //
@@ -217,7 +228,25 @@ pub fn verify(m: mockserver.HmMock, rules: [mockserver.HmRule]) -> HmVerdict [mu
 //     println("${mockverify.verify_counts([], [], []).satisfied}")
 // ```
 pub fn verify_counts(rules: [mockserver.HmRule], calls: [Int], seen: [HmRecorded]) -> HmVerdict []
-    todo("httpmock-nv.mockverify.verify_counts")
+    var unsatisfied: [HmUnsatisfied] = []
+    for i in 0..list.len(rules)
+        let e = rules[i].expectation
+        let n = if i < list.len(calls)
+            calls[i]
+        else
+            0
+        if not mockexpect.times_satisfied(e.times, n)
+            list.push(unsatisfied, HmUnsatisfied { rule: i, label: mockexpect.describe(e),
+                                                   wanted: e.times, calls: n })
+    var unexpected_calls: [HmRecorded] = []
+    var over: [HmRecorded] = []
+    for r in seen
+        if is_unexpected(r)
+            list.push(unexpected_calls, r)
+        if r.status == 409
+            list.push(over, r)
+    HmVerdict { satisfied: list.len(unsatisfied) + list.len(unexpected_calls) + list.len(over) == 0,
+                unsatisfied: unsatisfied, unexpected: unexpected_calls, over_served: over }
 
 // Whether a verdict is a pass.
 //
@@ -229,7 +258,7 @@ pub fn verify_counts(rules: [mockserver.HmRule], calls: [Int], seen: [HmRecorded
 //     println("${mockverify.satisfied(v)}")
 // ```
 pub fn satisfied(v: HmVerdict) -> Bool []
-    todo("httpmock-nv.mockverify.satisfied")
+    v.satisfied
 
 // The verdict as the text a person reads: what was expected, then what
 // happened.
@@ -245,7 +274,16 @@ pub fn satisfied(v: HmVerdict) -> Bool []
 //     println(mockverify.report(v))
 // ```
 pub fn report(v: HmVerdict) -> Str []
-    todo("httpmock-nv.mockverify.report")
+    if v.satisfied
+        return "every expectation was met and nothing unexpected arrived"
+    var lines: [Str] = []
+    for u in v.unsatisfied
+        list.push(lines, unsatisfied_line(u))
+    for r in v.unexpected
+        list.push(lines, "unexpected request: " + recorded_line(r))
+    for r in v.over_served
+        list.push(lines, "request past an expectation's limit: " + recorded_line(r))
+    str.join(lines, "\n")
 
 // One unsatisfied rule as one line: the index, the label, what was
 // expected, what happened.
@@ -260,7 +298,7 @@ pub fn report(v: HmVerdict) -> Str []
 //     println(mockverify.unsatisfied_line(u))
 // ```
 pub fn unsatisfied_line(u: HmUnsatisfied) -> Str []
-    todo("httpmock-nv.mockverify.unsatisfied_line")
+    "#${u.rule} ${u.label}: expected ${times_text(u.wanted)}, was called ${u.calls} time(s)"
 
 // Verify, and report a failure through `std.test`.
 //
@@ -279,7 +317,10 @@ pub fn unsatisfied_line(u: HmUnsatisfied) -> Str []
 //         Ok(m)  => mockverify.assert_verified(m, [])
 // ```
 pub fn assert_verified(m: mockserver.HmMock, rules: [mockserver.HmRule]) [mutate, io]
-    todo("httpmock-nv.mockverify.assert_verified")
+    let v = verify(m, rules)
+    if not v.satisfied
+        // cov: skip — reports through std.test, which fails the test that reaches it
+        test.fail(report(v))
 
 // Assert that the mock saw exactly these requests, in this order.
 //
@@ -299,7 +340,10 @@ pub fn assert_verified(m: mockserver.HmMock, rules: [mockserver.HmRule]) [mutate
 //         Ok(m)  => mockverify.assert_requests(m, [mockmatch.request("GET", "/ping")])
 // ```
 pub fn assert_requests(m: mockserver.HmMock, wanted: [mockmatch.HmRequest]) [mutate, io]
-    todo("httpmock-nv.mockverify.assert_requests")
+    match first_difference(recorded(m), wanted)
+        None      => test.assert(true)
+        // cov: skip — reports through std.test, which fails the test that reaches it
+        Some(why) => test.fail(why)
 
 // The recorded requests as one line each, for a failure message or a
 // `--verbose` run.
@@ -311,4 +355,67 @@ pub fn assert_requests(m: mockserver.HmMock, wanted: [mockmatch.HmRequest]) [mut
 //     println(mockverify.transcript([]))
 // ```
 pub fn transcript(seen: [HmRecorded]) -> Str []
-    todo("httpmock-nv.mockverify.transcript")
+    var lines: [Str] = []
+    for r in seen
+        list.push(lines, recorded_line(r))
+    str.join(lines, "\n")
+
+// A request no rule matched: nothing served it and the reply was not the
+// `409` that marks an exhausted rule.
+fn is_unexpected(r: HmRecorded) -> Bool
+    r.served_by < 0 and r.status != 409
+
+// What a call constraint says, in words.
+fn times_text(t: mockexpect.HmTimes) -> Str
+    if t.at_most < 0
+        return "at least ${t.at_least} call(s)"
+    if t.at_least == t.at_most
+        return "exactly ${t.at_least} call(s)"
+    if t.at_least == 0
+        return "at most ${t.at_most} call(s)"
+    "between ${t.at_least} and ${t.at_most} call(s)"
+
+// One recorded request as a line: where it came in, what it was, what
+// went back and which rule served it.
+fn recorded_line(r: HmRecorded) -> Str
+    let by = if r.served_by < 0
+        "no rule"
+    else
+        "rule ${r.served_by}"
+    "#${r.sequence} ${mockmatch.request_line(r.request)} -> ${r.status} (${by})"
+
+// Whether a recorded request is the wanted one.
+fn satisfies(seen: HmRequest, wanted: HmRequest) -> Bool
+    if seen.method != wanted.method or seen.path != wanted.path
+        return false
+    for q in wanted.query
+        if mockmatch.binding(seen.query, q.name) != Some(q.value)
+            return false
+    for h in wanted.headers
+        if mockmatch.header(seen, h.name) != Some(h.value)
+            return false
+    wanted.body == "" or wanted.body == seen.body
+
+// The first way a recording differs from the wanted requests, or `None`
+// when it is these requests in this order.  A wanted request is satisfied
+// by a recorded one that has its method and path and carries every query
+// pair, header and non-empty body it names; extra headers and query
+// pairs do not count against it, because a client adds ones a test did
+// not write.
+//
+// ```novo
+// use mockmatch
+// use mockverify
+//
+// fn main() [io]
+//     let why = mockverify.first_difference([], [mockmatch.request("GET", "/ping")])
+//     println(why ?? "same")        // expected 1 request(s), the mock saw 0:
+// ```
+pub fn first_difference(seen: [HmRecorded], wanted: [mockmatch.HmRequest]) -> ?Str []
+    if list.len(seen) != list.len(wanted)
+        return Some("expected ${list.len(wanted)} request(s), the mock saw ${list.len(seen)}:\n" + transcript(seen))
+    for i in 0..list.len(wanted)
+        if not satisfies(seen[i].request, wanted[i])
+            return Some("request #${i}: expected " + mockmatch.request_line(wanted[i])
+                        + ", the mock saw " + mockmatch.request_line(seen[i].request))
+    None

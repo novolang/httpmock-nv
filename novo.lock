@@ -3,13 +3,13 @@
 [matchers-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.1"
-version = "0.0.1"
-hash = "abf7599dbc9a68cbda95cea3905540416cecbed1edbe82ddb1880d4a597c9e9e"
+req = "^0.1.0"
+version = "0.1.0"
+hash = "2c5a9865400cbdf61265b48e4eb38d476c5527f4c7882782ff0b9f2d09c5235f"
 
 [router-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.1"
-version = "0.0.1"
-hash = "a631cfff9a20b7e6e9f81134d42719ebd75ccc54354a1085a6ac00189a9c30fe"
+req = "^0.1.0"
+version = "0.1.0"
+hash = "40ee0c054e2ed956f5c0d16eec841e4c478640002f51249fb38145eea3208e7e"

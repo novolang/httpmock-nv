@@ -1,0 +1,87 @@
+// mockstate.nv — what the running mock holds: its rules, how often each
+// was served, and every request it saw.
+//
+// The standard library's handler is a plain function with no capture, so
+// a running mock keeps its state in module-level variables, and this
+// module is where they live.  `mockserver` writes them while it serves
+// and `mockverify` reads them afterwards.  A program calls the functions
+// of those two modules and has no reason to call these.
+//
+// The recording is kept as parallel lists, one entry per request.  The
+// record type, `HmRecorded`, belongs to `mockverify`, which depends on
+// `mockserver`, so the lists hold its parts.
+//
+// The recording survives `mockserver.stop` and is replaced by the next
+// start, so a verdict can be read after the server is gone.
+
+use mockexpect
+use mockmatch
+use mockreply
+
+var held_expectations: [HmExpectation] = []
+var held_replies: [HmReply]            = []
+var held_counts: [Int]                 = []
+var seen_requests: [HmRequest]         = []
+var seen_served: [Int]                 = []
+var seen_status: [Int]                 = []
+var seen_misses: [[HmMiss]]            = []
+
+// Replace the rules, zero every count and forget the recording.
+pub fn begin(es: [HmExpectation], rs: [HmReply]) [mutate]
+    held_expectations = es[:]
+    held_replies = rs[:]
+    held_counts = []
+    for _ in es
+        list.push(held_counts, 0)
+    forget()
+
+// Forget the recording and zero every count, keeping the rules.
+pub fn forget() [mutate]
+    for i in 0..list.len(held_counts)
+        held_counts[i] = 0
+    seen_requests = []
+    seen_served = []
+    seen_status = []
+    seen_misses = []
+
+// The expectations the mock was started with, in order.
+pub fn expectations() -> [HmExpectation] [mutate]
+    held_expectations
+
+// The replies the mock was started with, in the order of the expectations.
+pub fn replies() -> [HmReply] [mutate]
+    held_replies
+
+// How many times each expectation has been served.
+pub fn counts() -> [Int] [mutate]
+    list.clone(held_counts)
+
+// Record one request.  `served` is the index of the expectation that
+// served it, or `0 - 1`; `status` is the status that went back.
+pub fn note(r: HmRequest, served: Int, status: Int, misses: [HmMiss]) [mutate]
+    if served >= 0
+        held_counts[served] = held_counts[served] + 1
+    list.push(seen_requests, r)
+    list.push(seen_served, served)
+    list.push(seen_status, status)
+    list.push(seen_misses, misses[:])
+
+// How many requests have been recorded.
+pub fn log_size() -> Int [mutate]
+    list.len(seen_requests)
+
+// The request recorded at position `i`.
+pub fn log_request(i: Int) -> HmRequest [mutate]
+    seen_requests[i]
+
+// The expectation that served the request at position `i`, or `0 - 1`.
+pub fn log_served(i: Int) -> Int [mutate]
+    seen_served[i]
+
+// The status that went back for the request at position `i`.
+pub fn log_status(i: Int) -> Int [mutate]
+    seen_status[i]
+
+// The misses of the request at position `i`.
+pub fn log_misses(i: Int) -> [HmMiss] [mutate]
+    seen_misses[i]

@@ -1,42 +1,30 @@
 // mockexpect.nv — an expectation, as a value.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// An expectation is data and not a registration.  `expect(HmGet,
+// "/users/:id")` builds a struct, the builders answer new structs, and a
+// list of them is handed to `mockserver.start`.  Nothing here starts a
+// server or opens a socket, and no function in this module performs an
+// effect.
 //
-// AN EXPECTATION IS DATA AND NOT A REGISTRATION.  Nothing here starts a
-// server, opens a socket or touches the mock: `expect(HmGet, "/users/:id")`
-// builds a struct, the builders answer new structs, and a list of them
-// is handed to `mockserver.start`.  Every function in this module is
-// `[]`.
+// An expectation is testable on its own: `mockmatch.decide` takes a list
+// of them and a request and answers, with no port and no process.  A
+// suite can share one, because it is a value rather than a registration
+// on a server that one test tore down.  The order of the list is the
+// order of matching, and the first expectation that matches serves.
 //
-// Three things follow, and they are why the shape is worth the extra
-// call.
+// The path is a router-nv pattern.  `/users/:id/posts` binds `id`,
+// `/static/*rest` binds the rest of the path, and the trailing-slash and
+// case rules are router-nv's `RoutePolicy`.  `expect_exact` takes a
+// literal path in which `:` and `*` mean themselves.
 //
-//   1. AN EXPECTATION IS TESTABLE ON ITS OWN.  `mockmatch.decide` takes
-//      a list and a request and answers — no port, no process, no
-//      teardown — so the matching half of this package is checked by
-//      ordinary pure tests, which is where a mock library's bugs
-//      actually live.
-//   2. A SUITE CAN SHARE ONE.  The expectation that says "the token
-//      endpoint answers this" is written once at the top of a file and
-//      used by every test in it, because it is a value rather than a
-//      registration on a server that one test tore down.
-//   3. THE ORDER IS THE LIST'S.  First match wins, and the list is the
-//      order — so a specific expectation before a general one is
-//      something a reader can see, rather than a property of the order
-//      registrations happened to run in.
-//
-// THE PATH IS A router-nv PATTERN and not a string.  `/users/:id/posts`
-// captures, `/static/*rest` is a tail, and the trailing-slash and case
-// policies are `RoutePolicy`'s rather than three booleans invented here.
-// A literal string is `path_exact`, which is `parse_pattern` over an
-// escaped literal, so there is still one matcher.
-//
-// THE VALUE MATCHERS ARE matchers-nv's.  A header expectation is a
-// `Matcher<Str>`, so `contains_text` and `matches_regex` mean here
-// exactly what they mean elsewhere in the suite — and `describe` is
-// what makes a miss readable.
+// A header, query or body rule is a matchers-nv `Matcher<Str>`, so
+// `contains_text` and `matches_regex` mean here what they mean in the
+// rest of a suite, and `describe` is what makes a miss readable.
 
 use routepat
+use matchers
+use matchvalue
+use matchtext
 
 // The methods an expectation can name.
 //
@@ -125,7 +113,9 @@ pub struct HmParamRule
 //     println(mockexpect.expect(HmGet, "/users/:id").label)
 // ```
 pub fn expect(method: HmMethod, pattern: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.expect")
+    match routepat.parse_pattern(pattern)
+        Ok(p)  => fresh(method, p, "")
+        Err(_) => fresh(method, unparsed(pattern), "invalid path pattern " + pattern)
 
 // An expectation for a literal path, with no pattern syntax at all.
 //
@@ -138,7 +128,9 @@ pub fn expect(method: HmMethod, pattern: Str) -> HmExpectation []
 //     println(mockexpect.expect_exact(HmGet, "/a:b/*").label)
 // ```
 pub fn expect_exact(method: HmMethod, path: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.expect_exact")
+    match literal_pattern(path)
+        Some(p) => fresh(method, p, "")
+        None    => fresh(method, unparsed(path), "invalid path " + path)
 
 // Whether a pattern parses, so a caller is told where they wrote it.
 //
@@ -150,7 +142,24 @@ pub fn expect_exact(method: HmMethod, path: Str) -> HmExpectation []
 //     println("${ok}")
 // ```
 pub fn path_ok(pattern: Str) -> Bool []
-    todo("httpmock-nv.mockexpect.path_ok")
+    match routepat.parse_pattern(pattern)
+        Ok(_)  => true
+        Err(_) => false
+
+// Whether the expectation can match anything: its path pattern parsed.
+//
+// `expect` and `expect_exact` answer an expectation whose pattern did not
+// parse, with the pattern's text as its source and no segments, so
+// `mockserver.start` refuses it and `mockmatch` never matches it.
+//
+// ```novo
+// use mockexpect
+//
+// fn main() [io]
+//     println("${mockexpect.matchable(mockexpect.expect(HmGet, "/users/:"))}")   // false
+// ```
+pub fn matchable(e: HmExpectation) -> Bool []
+    list.len(e.path.segments) > 0 or e.path.source == "/"
 
 // The expectation with a label for the failure text.
 //
@@ -161,7 +170,8 @@ pub fn path_ok(pattern: Str) -> Bool []
 //     println(mockexpect.labelled(mockexpect.expect(HmGet, "/t"), "the token endpoint").label)
 // ```
 pub fn labelled(e: HmExpectation, label: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.labelled")
+    HmExpectation { label: label, method: e.method, path: e.path, policy: e.policy,
+                    query: e.query, headers: e.headers, body: e.body, times: e.times }
 
 // The expectation with a different path policy.
 //
@@ -180,7 +190,8 @@ pub fn labelled(e: HmExpectation, label: Str) -> HmExpectation []
 //     println("${e.policy.decode_params}")
 // ```
 pub fn with_policy(e: HmExpectation, policy: routepat.RoutePolicy) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_policy")
+    HmExpectation { label: e.label, method: e.method, path: e.path, policy: policy,
+                    query: e.query, headers: e.headers, body: e.body, times: e.times }
 
 // The expectation with a required header.
 //
@@ -195,7 +206,7 @@ pub fn with_policy(e: HmExpectation, policy: routepat.RoutePolicy) -> HmExpectat
 //     println("${list.len(e.headers)}")
 // ```
 pub fn with_header(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_header")
+    with_headers(e, list.concat(e.headers, [HmParamRule { name: name, value: value, required: true }]))
 
 // The expectation with a header rule that applies only when the header
 // is present.
@@ -211,7 +222,7 @@ pub fn with_header(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpect
 //     println("${list.len(e.headers)}")
 // ```
 pub fn with_optional_header(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_optional_header")
+    with_headers(e, list.concat(e.headers, [HmParamRule { name: name, value: value, required: false }]))
 
 // The expectation with a required header whose value is exactly this.
 //
@@ -228,7 +239,7 @@ pub fn with_optional_header(e: HmExpectation, name: Str, value: Matcher<Str>) ->
 //     println("${list.len(e.headers)}")
 // ```
 pub fn with_header_value(e: HmExpectation, name: Str, value: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_header_value")
+    with_header(e, name, matchvalue.equal_to(value))
 
 // The expectation with a required query parameter.
 //
@@ -243,7 +254,9 @@ pub fn with_header_value(e: HmExpectation, name: Str, value: Str) -> HmExpectati
 //     println("${list.len(e.query)}")
 // ```
 pub fn with_query(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_query")
+    HmExpectation { label: e.label, method: e.method, path: e.path, policy: e.policy,
+                    query: list.concat(e.query, [HmParamRule { name: name, value: value, required: true }]),
+                    headers: e.headers, body: e.body, times: e.times }
 
 // The expectation with a required query parameter whose value is
 // exactly this.
@@ -257,7 +270,7 @@ pub fn with_query(e: HmExpectation, name: Str, value: Matcher<Str>) -> HmExpecta
 //     println("${list.len(e.query)}")
 // ```
 pub fn with_query_value(e: HmExpectation, name: Str, value: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_query_value")
+    with_query(e, name, matchvalue.equal_to(value))
 
 // The expectation with a matcher over the request body.
 //
@@ -271,7 +284,7 @@ pub fn with_query_value(e: HmExpectation, name: Str, value: Str) -> HmExpectatio
 //     println(e.label)
 // ```
 pub fn with_body(e: HmExpectation, body: Matcher<Str>) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_body")
+    with_body_rule(e, Some(body))
 
 // The expectation with a body that must be exactly this text.
 //
@@ -282,7 +295,7 @@ pub fn with_body(e: HmExpectation, body: Matcher<Str>) -> HmExpectation []
 //     println(mockexpect.with_body_text(mockexpect.expect(HmPost, "/u"), "ping").label)
 // ```
 pub fn with_body_text(e: HmExpectation, body: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_body_text")
+    with_body_rule(e, Some(matchvalue.equal_to(body)))
 
 // The expectation with a body that must be JSON equal to this text.
 //
@@ -300,7 +313,9 @@ pub fn with_body_text(e: HmExpectation, body: Str) -> HmExpectation []
 //     println(e.label)
 // ```
 pub fn with_body_json(e: HmExpectation, body: Str) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_body_json")
+    let want = "JSON equal to " + matchtext.shown(body)
+    let m = json_matcher(body, want)
+    with_body_rule(e, Some(m))
 
 // No constraint on how many times an expectation is served: at least
 // zero, no ceiling.
@@ -312,7 +327,7 @@ pub fn with_body_json(e: HmExpectation, body: Str) -> HmExpectation []
 //     println("${mockexpect.any_times().at_least}")
 // ```
 pub fn any_times() -> HmTimes []
-    todo("httpmock-nv.mockexpect.any_times")
+    HmTimes { at_least: 0, at_most: 0 - 1 }
 
 // Exactly `n` calls: at least `n`, at most `n`.
 //
@@ -323,7 +338,7 @@ pub fn any_times() -> HmTimes []
 //     println("${mockexpect.exactly(1).at_most}")
 // ```
 pub fn exactly(n: Int) -> HmTimes []
-    todo("httpmock-nv.mockexpect.exactly")
+    HmTimes { at_least: n, at_most: n }
 
 // At least `n` calls, with no ceiling.
 //
@@ -334,7 +349,7 @@ pub fn exactly(n: Int) -> HmTimes []
 //     println("${mockexpect.at_least(1).at_least}")
 // ```
 pub fn at_least(n: Int) -> HmTimes []
-    todo("httpmock-nv.mockexpect.at_least")
+    HmTimes { at_least: n, at_most: 0 - 1 }
 
 // At most `n` calls, with no floor.
 //
@@ -345,7 +360,7 @@ pub fn at_least(n: Int) -> HmTimes []
 //     println("${mockexpect.at_most(2).at_most}")
 // ```
 pub fn at_most(n: Int) -> HmTimes []
-    todo("httpmock-nv.mockexpect.at_most")
+    HmTimes { at_least: 0, at_most: n }
 
 // The expectation with a call constraint.
 //
@@ -357,7 +372,8 @@ pub fn at_most(n: Int) -> HmTimes []
 //     println("${e.times.at_most}")
 // ```
 pub fn with_times(e: HmExpectation, times: HmTimes) -> HmExpectation []
-    todo("httpmock-nv.mockexpect.with_times")
+    HmExpectation { label: e.label, method: e.method, path: e.path, policy: e.policy,
+                    query: e.query, headers: e.headers, body: e.body, times: times }
 
 // Whether a number of calls satisfies a constraint.
 //
@@ -368,7 +384,7 @@ pub fn with_times(e: HmExpectation, times: HmTimes) -> HmExpectation []
 //     println("${mockexpect.times_satisfied(mockexpect.exactly(1), 1)}")
 // ```
 pub fn times_satisfied(t: HmTimes, calls: Int) -> Bool []
-    todo("httpmock-nv.mockexpect.times_satisfied")
+    calls >= t.at_least and (t.at_most < 0 or calls <= t.at_most)
 
 // Whether one more call would exceed the ceiling.
 //
@@ -379,7 +395,7 @@ pub fn times_satisfied(t: HmTimes, calls: Int) -> Bool []
 //     println("${mockexpect.times_exhausted(mockexpect.exactly(1), 1)}")
 // ```
 pub fn times_exhausted(t: HmTimes, calls: Int) -> Bool []
-    todo("httpmock-nv.mockexpect.times_exhausted")
+    t.at_most >= 0 and calls >= t.at_most
 
 // The method's name in the wire spelling: `GET`, `POST`, and `*` for
 // `HmAnyMethod`.
@@ -391,7 +407,15 @@ pub fn times_exhausted(t: HmTimes, calls: Int) -> Bool []
 //     println(mockexpect.method_name(HmAnyMethod))
 // ```
 pub fn method_name(m: HmMethod) -> Str []
-    todo("httpmock-nv.mockexpect.method_name")
+    match m
+        HmGet       => "GET"
+        HmHead      => "HEAD"
+        HmPost      => "POST"
+        HmPut       => "PUT"
+        HmPatch     => "PATCH"
+        HmDelete    => "DELETE"
+        HmOptions   => "OPTIONS"
+        HmAnyMethod => "*"
 
 // The method a wire spelling names, or `None`.
 //
@@ -404,7 +428,16 @@ pub fn method_name(m: HmMethod) -> Str []
 //         None    => println("not a method this package names")
 // ```
 pub fn method_named(name: Str) -> ?HmMethod []
-    todo("httpmock-nv.mockexpect.method_named")
+    match name
+        "GET"     => Some(HmGet)
+        "HEAD"    => Some(HmHead)
+        "POST"    => Some(HmPost)
+        "PUT"     => Some(HmPut)
+        "PATCH"   => Some(HmPatch)
+        "DELETE"  => Some(HmDelete)
+        "OPTIONS" => Some(HmOptions)
+        "*"       => Some(HmAnyMethod)
+        _         => None
 
 // The one-line description of an expectation, used in every failure.
 //
@@ -419,4 +452,66 @@ pub fn method_named(name: Str) -> ?HmMethod []
 //     println(mockexpect.describe(mockexpect.expect(HmGet, "/users/:id")))
 // ```
 pub fn describe(e: HmExpectation) -> Str []
-    todo("httpmock-nv.mockexpect.describe")
+    if e.label != ""
+        return e.label
+    method_name(e.method) + " " + e.path.source
+
+fn fresh(method: HmMethod, path: routepat.RoutePattern, label: Str) -> HmExpectation
+    HmExpectation { label: label, method: method, path: path, policy: routepat.web_policy(),
+                    query: [], headers: [], body: None, times: any_times() }
+
+fn with_headers(e: HmExpectation, headers: [HmParamRule]) -> HmExpectation
+    HmExpectation { label: e.label, method: e.method, path: e.path, policy: e.policy,
+                    query: e.query, headers: headers, body: e.body, times: e.times }
+
+fn with_body_rule(e: HmExpectation, body: ?Matcher<Str>) -> HmExpectation
+    HmExpectation { label: e.label, method: e.method, path: e.path, policy: e.policy,
+                    query: e.query, headers: e.headers, body: body, times: e.times }
+
+// The pattern an expectation holds when the text did not parse: the
+// source and no segments.  `mockmatch.pattern_valid` tells it from a
+// parsed pattern, and such an expectation matches nothing.
+fn unparsed(source: Str) -> routepat.RoutePattern
+    routepat.RoutePattern { source: source, segments: [] }
+
+// Every segment of a literal path as a literal, so `:` and `*` are
+// ordinary bytes.  `None` when the path does not begin with `/` or has
+// an empty segment.
+fn literal_pattern(path: Str) -> ?routepat.RoutePattern
+    if not str.starts_with(path, "/")
+        return None
+    if path == "/"
+        return Some(routepat.RoutePattern { source: path, segments: [] })
+    var segments: [routepat.RouteSegment] = []
+    var start = 1
+    let n = str.len(path)
+    while start <= n
+        let end = match str.index_from(path, "/", start)
+            Some(i) => i
+            None    => n
+        if end == start
+            return None
+        let span = routepat.RouteSpan { start: start, len: end - start }
+        list.push(segments, routepat.RouteSegment { kind: RouteSegLiteral, text: span })
+        start = end + 1
+    Some(routepat.RoutePattern { source: path, segments: segments })
+
+// Whether two JSON documents are equal as JSON.  Text that is not JSON on
+// either side compares as text.
+fn json_same(a: Str, b: Str) -> Bool
+    let ja = json.parse(a)
+    let jb = json.parse(b)
+    match ja
+        Some(x) =>
+            match jb
+                Some(y) => json.equals(x, y)
+                None    => a == b
+        None    => a == b
+
+fn json_judge(want: Str, got: Str) -> MatchOutcome
+    if json_same(want, got)
+        return matchers.matched()
+    matchers.mismatched("was " + matchtext.shown(got))
+
+fn json_matcher(body: Str, want: Str) -> Matcher<Str>
+    Matcher { judge: text => json_judge(body, text), expected: want }
