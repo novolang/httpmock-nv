@@ -66,7 +66,6 @@ pub fn status(code: Int) -> HmReply []
 //     println(mockreply.text(200, "pong").body)
 // ```
 pub fn text(code: Int, body: Str) -> HmReply []
-    // workaround(a-parameter-named-like-a-function-of-its-module-makes-the-call-through-the-module-segfault): a call to the function `body` from a function that has a parameter `body` crashes when reached through the module, so both constructors call `typed`.
     typed(code, "text/plain; charset=utf-8", body)
 
 // A reply with a JSON body and `application/json; charset=utf-8`.
@@ -84,7 +83,6 @@ pub fn text(code: Int, body: Str) -> HmReply []
 //     println("${r.status}")
 // ```
 pub fn json(code: Int, body: Str) -> HmReply []
-    // workaround(a-parameter-named-like-a-function-of-its-module-makes-the-call-through-the-module-segfault): see `text`.
     typed(code, "application/json; charset=utf-8", body)
 
 // A reply with a body and a content type the caller names.
