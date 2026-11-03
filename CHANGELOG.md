@@ -50,6 +50,8 @@ The first implementation of the interface published as 0.0.2.
   parameter of the same name crashes when reached through the module
   (bug `a-parameter-named-like-a-function-of-its-module-makes-the-call-through-the-module-segfault`).
 
+This release requires novo 0.23.0 or later.
+
 ## 0.0.2 — 2026-09-16
 
 README rewritten to the package README style guide
